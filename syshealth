@@ -1,0 +1,70 @@
+#!/bin/bash
+#shellcheck disable=SC2155,SC1091
+set -euo pipefail
+
+###############################################################################
+# SysHealth - System Health Report Generator
+#
+# This script serves as a wrapper for the main syshealth.py Python script.
+# It manages the virtual environment, checks for API key requirements,
+# ensures script permissions, and properly passes arguments to the Python script.
+#
+# The script requires the ANTHROPIC_API_KEY environment variable to be set,
+# except when displaying help information.
+#
+# Usage:
+#   ./syshealth [options] [hosts...]
+#
+# Example:
+#   ./syshealth -v -L spanish server1 server2
+###############################################################################
+
+# Determine absolute path to script directory, even if called via symlink
+declare -r SCRIPT_DIR="$(cd "$(dirname "$(readlink -en "${BASH_SOURCE[0]}")")" && pwd)"
+# Path to the main Python script
+declare -r PYTHON_SCRIPT="$SCRIPT_DIR"/syshealth.py
+# Path to the Python virtual environment
+declare -r VENV_DIR="$SCRIPT_DIR"/.venv
+
+# Verify the main Python script exists
+[[ -f "$PYTHON_SCRIPT" ]] || {
+  >&2 echo "Error: Could not find syshealth.py in $SCRIPT_DIR"
+  exit 1
+}
+
+# Ensure the Python script has executable permissions
+[[ -x "$PYTHON_SCRIPT" ]] || chmod +x "$PYTHON_SCRIPT"
+
+# Special case: Allow help display without API key requirements
+# This ensures users can see usage information without needing an API key
+if [[ "$*" == *"--help"* || "$*" == *"-h"* ]]; then
+  # Activate the virtual environment if it exists
+  [[ -d "$VENV_DIR" && -f "$VENV_DIR"/bin/activate ]] && source "$VENV_DIR"/bin/activate
+  "$PYTHON_SCRIPT" "$@"
+  exit 0
+fi
+
+# Verify that the required API key environment variable is set
+# The API key is required for all operations except displaying help
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
+  >&2 echo "Error: ANTHROPIC_API_KEY environment variable not set"
+  >&2 echo "Please set your API key with: export ANTHROPIC_API_KEY='your-api-key'"
+  >&2 echo "For help, run: $0 --help"
+  exit 1
+}
+
+# Verify that the Python virtual environment exists and is properly configured
+# This is required for the Python dependencies to be available
+[[ -d "$VENV_DIR" && -f "$VENV_DIR"/bin/activate ]] || {
+  >&2 echo "Virtual environment (.venv) for $PYTHON_SCRIPT not found!"
+  >&2 echo "Run the install.sh script to set up the virtual environment"
+  exit 1
+}
+
+# Activate the Python virtual environment to ensure all dependencies are available
+source "$VENV_DIR"/bin/activate
+
+# Execute the Python script with all arguments passed to this wrapper
+"$VENV_DIR"/bin/python "$PYTHON_SCRIPT" "$@"
+
+#fin

@@ -1,0 +1,119 @@
+# SysHealth Configuration File
+# This file contains default settings for the SysHealth system monitoring tool
+# Environment variables can override any setting using the format: SYSHEALTH_<section>_<key>
+# Example: SYSHEALTH_CLAUDE_MODEL overrides claude.model
+
+# Version information
+version: "1.0.0"
+
+# Default language settings
+language:
+  default: "en"  # Default report language
+  supported: ["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"]  # Supported languages
+
+# Claude AI configuration
+claude:
+  model: "claude-sonnet-4-0"  # Default Claude model
+  max_tokens: 32000  # Maximum tokens for API responses
+  temperature: 0.1  # Response temperature (0.0-1.0, lower = more focused)
+  timeout: 300  # API timeout in seconds
+
+# Output configuration
+output:
+  default_directory: "~/syshealth"  # Default output directory (~ expands to user home)
+  file_extensions:
+    report: ".md"  # Report file extension
+    debug: ".txt"  # Debug file extension
+    log: ".log"    # Log file extension
+  timestamp_format: "%Y%m%d-%H%M%S"  # Timestamp format for filenames
+  debug_subdirectory: "debug"  # Subdirectory for debug files
+
+# Logging configuration
+logging:
+  format: "%(asctime)s - %(levelname)s - %(message)s"  # Log message format
+  default_level: "WARNING"  # Default log level
+  verbose_level: "INFO"     # Log level when -v flag is used
+  debug_level: "DEBUG"      # Log level when -d flag is used
+
+# Email configuration
+email:
+  smtp:
+    host: "localhost"  # SMTP server hostname
+    port: 25          # SMTP server port
+    timeout: 30       # SMTP timeout in seconds
+  sender:
+    name: "SysHealth"           # Sender display name
+    domain_suffix: "@hostname"  # Sender email domain (hostname will be substituted)
+  subject_template: "System Health Report for {hostname}"  # Email subject template
+  attachment_filename: "{hostname}-{language}-{timestamp}.md"  # Attachment filename template
+
+# System command limits and timeouts
+commands:
+  timeout: 30  # Default command timeout in seconds
+  ssh_timeout: 60  # SSH command timeout in seconds
+  max_output_lines: 1000  # Maximum lines to capture from command output
+  retry_attempts: 3  # Number of retry attempts for failed commands
+  retry_delay: 2    # Delay between retries in seconds
+
+# Dependency checking
+dependencies:
+  required:
+    - "python3"  # Essential for running the script
+  recommended:
+    - "lshw"     # Hardware listing tool
+    - "df"       # Disk space usage tool
+    - "ps"       # Process status tool
+    - "cat"      # File reading utility
+    - "free"     # Memory usage display utility
+    - "top"      # Process monitoring
+    - "netstat"  # Network statistics
+    - "ss"       # Socket statistics (alternative to netstat)
+  optional:
+    - "pandoc"   # Markdown to HTML conversion for email
+    - "smartctl" # SMART disk health monitoring
+    - "rkhunter" # Rootkit detection
+    - "chkrootkit" # Alternative rootkit detection
+
+# Security settings
+security:
+  enable_command_validation: true  # Validate commands before execution
+  allowed_ssh_options: ["-o", "ConnectTimeout=30", "-o", "StrictHostKeyChecking=yes"]
+  max_report_size_mb: 50  # Maximum report size in MB
+  sanitize_output: true   # Remove sensitive information from outputs
+
+# Performance settings
+performance:
+  max_concurrent_hosts: 5  # Maximum number of hosts to process concurrently
+  command_cache_ttl: 300   # Command output cache TTL in seconds
+  memory_limit_mb: 512     # Memory usage limit in MB
+
+# Report formatting
+report:
+  sections:
+    - "system_overview"      # Basic system information
+    - "hardware_config"      # Hardware configuration
+    - "storage_status"       # Storage and disk usage
+    - "memory_usage"         # Memory and swap usage
+    - "cpu_performance"      # CPU load and processes
+    - "network_config"       # Network interfaces and services
+    - "system_health"        # Services and system health
+    - "critical_issues"      # High priority problems
+    - "warnings"            # Potential issues
+    - "recommendations"     # Improvement suggestions
+  
+  thresholds:
+    disk_usage_warning: 80   # Disk usage warning threshold (%)
+    disk_usage_critical: 90  # Disk usage critical threshold (%)
+    memory_usage_warning: 85 # Memory usage warning threshold (%)
+    memory_usage_critical: 95 # Memory usage critical threshold (%)
+    cpu_load_warning: 2.0    # CPU load average warning threshold
+    cpu_load_critical: 4.0   # CPU load average critical threshold
+
+# Development and debugging
+development:
+  enable_debug_output: false  # Enable additional debug information
+  save_raw_commands: false    # Save raw command outputs to debug directory
+  profiling_enabled: false    # Enable performance profiling
+  test_mode: false           # Enable test mode (uses mock data)
+
+#fin

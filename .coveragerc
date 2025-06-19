@@ -1,0 +1,28 @@
+[run]
+source = .
+omit = 
+    .venv/*
+    tests/*
+    setup.py
+    */test_*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    #fin
+    
+# Ignore too generic warnings
+precision = 2
+show_missing = True
+
+[html]
+directory = htmlcov
+
+[xml]
+output = coverage.xml
+
+#fin
