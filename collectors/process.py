@@ -5,6 +5,7 @@
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
+from executors.base import CommandExecutor
 
 
 class ProcessInfoCollector(SystemInfoCollector):
@@ -14,7 +15,9 @@ class ProcessInfoCollector(SystemInfoCollector):
     including top CPU and memory consuming processes.
     """
 
-    def __init__(self, executor, config: SystemInfoConfig = None):
+    def __init__(
+        self, executor: CommandExecutor, config: SystemInfoConfig | None = None
+    ):
         """Initialize the process info collector.
 
         Args:

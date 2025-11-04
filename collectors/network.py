@@ -5,6 +5,7 @@
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
+from executors.base import CommandExecutor
 
 
 class NetworkInfoCollector(SystemInfoCollector):
@@ -14,7 +15,9 @@ class NetworkInfoCollector(SystemInfoCollector):
     listening ports, and network connectivity.
     """
 
-    def __init__(self, executor, config: SystemInfoConfig = None):
+    def __init__(
+        self, executor: CommandExecutor, config: SystemInfoConfig | None = None
+    ):
         """Initialize the network info collector.
 
         Args:

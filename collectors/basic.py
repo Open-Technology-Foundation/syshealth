@@ -6,6 +6,7 @@ import datetime
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
+from executors.base import CommandExecutor
 
 
 class BasicSystemInfoCollector(SystemInfoCollector):
@@ -15,7 +16,12 @@ class BasicSystemInfoCollector(SystemInfoCollector):
     that forms the foundation of any system health report.
     """
 
-    def __init__(self, executor, hostname: str, config: SystemInfoConfig = None):
+    def __init__(
+        self,
+        executor: CommandExecutor,
+        hostname: str,
+        config: SystemInfoConfig | None = None,
+    ):
         """Initialize the basic system info collector.
 
         Args:
