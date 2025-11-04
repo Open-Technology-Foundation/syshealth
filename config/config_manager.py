@@ -34,15 +34,15 @@ class ConfigManager:
         timeout = config.get('commands.timeout', 30)
     """
 
-    def __init__(self, config_path: str | None = None):
+    def __init__(self, config_path: str | None = None) -> None:
         """Initialize configuration manager.
 
         Args:
             config_path (str | None): Path to YAML config file. If None,
                 looks for config/syshealth.yaml relative to the script location.
         """
-        self._config = {}
-        self._config_path = config_path
+        self._config: dict[str, Any] = {}
+        self._config_path: str | None = config_path
         self._load_config()
 
     def _get_default_config_path(self) -> str:
@@ -50,7 +50,7 @@ class ConfigManager:
         script_dir = Path(__file__).parent.parent
         return str(script_dir / "config" / "syshealth.yaml")
 
-    def _load_config(self):
+    def _load_config(self) -> None:
         """Load configuration from file and environment variables."""
         # Determine config file path
         if self._config_path is None:
@@ -62,9 +62,15 @@ class ConfigManager:
         # Apply environment variable overrides
         self._apply_env_overrides()
 
-    def _load_yaml_config(self):
+    def _load_yaml_config(self) -> None:
         """Load configuration from YAML file."""
         try:
+            # Ensure config path is not None before creating Path
+            if self._config_path is None:
+                logger.warning("Configuration path is None")
+                self._config = {}
+                return
+
             config_path = Path(self._config_path)
             if config_path.exists():
                 with open(config_path, "r") as f:
@@ -77,7 +83,7 @@ class ConfigManager:
             logger.error(f"Failed to load configuration file: {e}")
             self._config = {}
 
-    def _apply_env_overrides(self):
+    def _apply_env_overrides(self) -> None:
         """Apply environment variable overrides to configuration.
 
         Environment variables follow the format: SYSHEALTH_<section>_<key>
@@ -130,7 +136,7 @@ class ConfigManager:
         # Return as string
         return value
 
-    def _set_nested_value(self, path: str, value: Any):
+    def _set_nested_value(self, path: str, value: Any) -> None:
         """Set a nested configuration value using dot notation.
 
         Args:
@@ -178,9 +184,13 @@ class ConfigManager:
         Returns:
             dict[str, Any]: Configuration section or empty dict
         """
-        return self._config.get(section, {})
+        result = self._config.get(section, {})
+        # Ensure we return dict[str, Any], not Any
+        if isinstance(result, dict):
+            return result
+        return {}
 
-    def set(self, path: str, value: Any):
+    def set(self, path: str, value: Any) -> None:
         """Set a configuration value using dot notation.
 
         Args:
@@ -224,22 +234,22 @@ class ConfigManager:
         # Convert to absolute path
         return os.path.abspath(expanded)
 
-    def get_expanded_path(self, path: str, default: str = None) -> str:
+    def get_expanded_path(self, path: str, default: str | None = None) -> str | None:
         """Get a configuration path value and expand it.
 
         Args:
             path (str): Configuration path (e.g., 'output.default_directory')
-            default (str): Default path if not found
+            default (str | None): Default path if not found
 
         Returns:
-            str: Expanded absolute path
+            str | None: Expanded absolute path, or None if not found
         """
         config_path = self.get(path, default)
         if config_path is None:
             return None
-        return self.expand_path(config_path)
+        return self.expand_path(str(config_path))
 
-    def reload(self):
+    def reload(self) -> None:
         """Reload configuration from file and environment variables."""
         self._load_config()
 
@@ -261,7 +271,7 @@ class ConfigManager:
 
 
 # Global configuration instance
-_global_config = None
+_global_config: ConfigManager | None = None
 
 
 def get_config() -> ConfigManager:
@@ -276,7 +286,7 @@ def get_config() -> ConfigManager:
     return _global_config
 
 
-def reload_config():
+def reload_config() -> None:
     """Reload the global configuration."""
     global _global_config
     if _global_config is not None:
@@ -286,34 +296,40 @@ def reload_config():
 # Convenience functions for common configuration values
 def get_claude_model() -> str:
     """Get the Claude model name."""
-    return get_config().get("claude.model", "claude-3-7-sonnet-20250219")
+    value = get_config().get("claude.model", "claude-3-7-sonnet-20250219")
+    return str(value)
 
 
 def get_default_language() -> str:
     """Get the default report language."""
-    return get_config().get("language.default", "en")
+    value = get_config().get("language.default", "en")
+    return str(value)
 
 
 def get_output_directory() -> str:
     """Get the default output directory (expanded)."""
-    return get_config().get_expanded_path("output.default_directory", "~/syshealth")
+    path = get_config().get_expanded_path("output.default_directory", "~/syshealth")
+    return str(path) if path is not None else "~/syshealth"
 
 
 def get_command_timeout() -> int:
     """Get the default command timeout."""
-    return get_config().get("commands.timeout", 30)
+    value = get_config().get("commands.timeout", 30)
+    return int(value)
 
 
 def get_claude_timeout() -> int:
     """Get the Claude API timeout."""
-    return get_config().get("claude.timeout", 300)
+    value = get_config().get("claude.timeout", 300)
+    return int(value)
 
 
 def get_log_format() -> str:
     """Get the logging format string."""
-    return get_config().get(
+    value = get_config().get(
         "logging.format", "%(asctime)s - %(levelname)s - %(message)s"
     )
+    return str(value)
 
 
 def get_smtp_settings() -> dict[str, Any]:
