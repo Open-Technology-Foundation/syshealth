@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+
+# Bash completion for syshealth script
+# Add to your bash profile or completion directory
+
+_syshealth()
+{
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    # Available options
+    opts="-v --verbose -d --debug -L --language -m --model -o --output-dir --mail -h --help"
+    
+    # Claude models
+    models="claude-3-opus-20240229 claude-3-sonnet-20240229 claude-3-haiku-20240307 claude-3-5-sonnet-20241022 claude-sonnet-4-0"
+    
+    # Common languages
+    languages="english spanish french german italian portuguese chinese japanese korean arabic"
+
+    case "${prev}" in
+        -L|--language)
+            COMPREPLY=( $(compgen -W "${languages}" -- ${cur}) )
+            return 0
+            ;;
+        -m|--model)
+            COMPREPLY=( $(compgen -W "${models}" -- ${cur}) )
+            return 0
+            ;;
+        -o|--output-dir)
+            COMPREPLY=( $(compgen -d -- ${cur}) )
+            return 0
+            ;;
+        --mail)
+            # No completion for email addresses
+            return 0
+            ;;
+    esac
+
+    case "${cur}" in
+        -*)
+            COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
+            return 0
+            ;;
+        *)
+            # Complete hostnames from known_hosts, /etc/hosts, and SSH config
+            local hosts=""
+            
+            # SSH known_hosts
+            if [[ -r ~/.ssh/known_hosts ]]; then
+                hosts+=" $(awk '{print $1}' ~/.ssh/known_hosts 2>/dev/null | cut -d, -f1 | grep -v '\[' | sort -u)"
+            fi
+            
+            # SSH config
+            if [[ -r ~/.ssh/config ]]; then
+                hosts+=" $(awk '/^Host / {print $2}' ~/.ssh/config 2>/dev/null | grep -v '*' | sort -u)"
+            fi
+            
+            # /etc/hosts
+            if [[ -r /etc/hosts ]]; then
+                hosts+=" $(awk '!/^#/ && NF>1 {for(i=2;i<=NF;i++) print $i}' /etc/hosts 2>/dev/null | sort -u)"
+            fi
+            
+            # Add localhost variations
+            hosts+=" localhost 127.0.0.1 $(hostname) $(hostname -f 2>/dev/null)"
+            
+            COMPREPLY=( $(compgen -W "${hosts}" -- ${cur}) )
+            return 0
+            ;;
+    esac
+}
+
+complete -F _syshealth syshealth

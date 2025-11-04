@@ -9,7 +9,7 @@ DEFAULT_COMMANDS = SystemInfoConfig()
 
 # Distribution-specific configurations can be added here as needed
 UBUNTU_COMMANDS = SystemInfoConfig.for_distribution("ubuntu")
-CENTOS_COMMANDS = SystemInfoConfig.for_distribution("centos") 
+CENTOS_COMMANDS = SystemInfoConfig.for_distribution("centos")
 ARCH_COMMANDS = SystemInfoConfig.for_distribution("arch")
 
-#fin
+# fin

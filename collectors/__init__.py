@@ -8,19 +8,19 @@ modular, testable, and maintainable.
 from .base import SystemInfoCollector
 from .basic import BasicSystemInfoCollector
 from .hardware import HardwareInfoCollector
-from .storage import StorageInfoCollector
-from .process import ProcessInfoCollector
 from .network import NetworkInfoCollector
+from .process import ProcessInfoCollector
 from .security import SecurityInfoCollector
+from .storage import StorageInfoCollector
 
 __all__ = [
-  "SystemInfoCollector",
-  "BasicSystemInfoCollector", 
-  "HardwareInfoCollector",
-  "StorageInfoCollector",
-  "ProcessInfoCollector",
-  "NetworkInfoCollector",
-  "SecurityInfoCollector",
+    "SystemInfoCollector",
+    "BasicSystemInfoCollector",
+    "HardwareInfoCollector",
+    "StorageInfoCollector",
+    "ProcessInfoCollector",
+    "NetworkInfoCollector",
+    "SecurityInfoCollector",
 ]
 
-#fin
+# fin
