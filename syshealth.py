@@ -52,7 +52,7 @@ logging.basicConfig(level=logging.WARNING, format=get_log_format())
 logger = logging.getLogger("syshealth")
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments for SysHealth.
 
     Sets up all available command-line options including verbose/debug modes,
@@ -112,7 +112,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def check_dependencies():
+def check_dependencies() -> None:
     """Check if required and recommended system dependencies are installed.
 
     Verifies the presence of essential and recommended command-line tools
@@ -184,6 +184,10 @@ def execute_command(command: str, host: str | None = None) -> str:
         - Non-zero exit codes are handled gracefully with warning logs
     """
     try:
+        # Declare full_cmd with explicit Union type for mypy
+        full_cmd: str | list[str]
+        shell: bool
+
         if host and host != socket.gethostname():
             # For SSH remote execution, pass the entire command as a single string
             full_cmd = ["ssh", host, command]
@@ -245,9 +249,10 @@ def collect_system_info(host: str) -> dict[str, str]:
         StorageInfoCollector,
     )
     from config import DEFAULT_COMMANDS
-    from executors import LocalCommandExecutor, RemoteCommandExecutor
+    from executors import CommandExecutor, LocalCommandExecutor, RemoteCommandExecutor
 
     # Determine the appropriate executor based on host
+    executor: CommandExecutor
     if host and host != socket.gethostname():
         executor = RemoteCommandExecutor(host)
     else:
@@ -489,7 +494,7 @@ def send_email(report_path: str, recipients: list[str], host: str) -> bool:
         return False
 
 
-def main():
+def main() -> None:
     """Main function to run the system health report generation process.
 
     This function orchestrates the entire workflow:
