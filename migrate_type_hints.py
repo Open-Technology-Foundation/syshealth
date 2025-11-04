@@ -86,7 +86,7 @@ def modernize_file(filepath: Path) -> bool:
         return False
 
 
-def main():
+def main() -> None:
     """Run type hint modernization on all Python files."""
     print("=" * 70)
     print(" " * 10 + "Type Hint Modernization to Python 3.12+ Syntax")
