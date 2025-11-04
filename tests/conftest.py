@@ -12,7 +12,7 @@ import pytest
 
 
 @pytest.fixture
-def mock_command_responses():
+def mock_command_responses() -> None:
     """Standard mock command responses for testing."""
     return {
         # Basic system commands
@@ -47,7 +47,7 @@ def mock_command_responses():
 
 
 @pytest.fixture
-def mock_command_executor(mock_command_responses):
+def mock_command_executor(mock_command_responses) -> None:
     """Mock command executor with predefined responses."""
     from tests.test_collectors import MockCommandExecutor
 
@@ -55,7 +55,7 @@ def mock_command_executor(mock_command_responses):
 
 
 @pytest.fixture
-def test_system_info():
+def test_system_info() -> None:
     """Sample system information dictionary for testing."""
     return {
         "hostname": "testhost",
@@ -68,14 +68,14 @@ def test_system_info():
 
 
 @pytest.fixture
-def temp_directory():
+def temp_directory() -> None:
     """Temporary directory for test file operations."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield tmpdir
 
 
 @pytest.fixture
-def mock_anthropic_client():
+def mock_anthropic_client() -> None:
     """Mock Anthropic API client for testing."""
     with patch("anthropic.Anthropic") as mock_client:
         # Mock the messages.create method
@@ -88,7 +88,7 @@ def mock_anthropic_client():
 
 
 @pytest.fixture
-def mock_environment_vars():
+def mock_environment_vars() -> None:
     """Mock environment variables for testing."""
     with patch.dict(
         os.environ,
@@ -98,7 +98,7 @@ def mock_environment_vars():
 
 
 @pytest.fixture
-def sample_report_content():
+def sample_report_content() -> None:
     """Sample report content for testing file operations."""
     return """# System Health Report
 
@@ -118,7 +118,7 @@ System appears healthy.
 # Helper functions for tests
 
 
-def create_mock_subprocess_result(returncode=0, stdout="", stderr=""):
+def create_mock_subprocess_result(returncode=0, stdout="", stderr="") -> None:
     """Create a mock subprocess result."""
     result = Mock()
     result.returncode = returncode
@@ -127,7 +127,7 @@ def create_mock_subprocess_result(returncode=0, stdout="", stderr=""):
     return result
 
 
-def assert_collector_keys(result, expected_keys):
+def assert_collector_keys(result, expected_keys) -> None:
     """Assert that collector result contains expected keys."""
     for key in expected_keys:
         assert key in result, f"Expected key '{key}' not found in collector result"
