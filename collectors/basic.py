@@ -3,6 +3,7 @@
 """Basic system information collector."""
 
 import datetime
+from typing import override
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
@@ -33,6 +34,7 @@ class BasicSystemInfoCollector(SystemInfoCollector):
         self.hostname = hostname
         self.config = config or SystemInfoConfig()
 
+    @override
     def collect(self) -> dict[str, str]:
         """Collect basic system information.
 
@@ -45,6 +47,10 @@ class BasicSystemInfoCollector(SystemInfoCollector):
             "uname": self._safe_execute(self.config.uname_command),
             "os_release": self._safe_execute(self.config.os_release_command),
             "uptime": self._safe_execute(self.config.uptime_command),
+            "time_sync": self._safe_execute(
+                self.config.time_sync_command,
+                "Time synchronization information not available",
+            ),
             "virtualization": self._safe_execute(self.config.virtualization_command),
             "container_info": self._safe_execute(self.config.container_info_command),
         }

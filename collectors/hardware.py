@@ -2,6 +2,7 @@
 
 """Hardware information collector."""
 
+from typing import override
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
@@ -27,6 +28,7 @@ class HardwareInfoCollector(SystemInfoCollector):
         super().__init__(executor)
         self.config = config or SystemInfoConfig()
 
+    @override
     def collect(self) -> dict[str, str]:
         """Collect hardware information.
 
@@ -52,6 +54,12 @@ class HardwareInfoCollector(SystemInfoCollector):
         # Memory information
         info["memory"] = self._safe_execute(self.config.memory_command)
         info["swap_info"] = self._safe_execute(self.config.swap_info_command)
+
+        # Temperature monitoring
+        info["temperature"] = self._safe_execute(
+            self.config.temperature_command,
+            "Temperature information not available (install: sudo apt install lm-sensors)",
+        )
 
         return info
 

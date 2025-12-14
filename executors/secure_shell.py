@@ -45,11 +45,22 @@ class SecureShellExecutor:
         Args:
             validator: CommandValidator instance (uses default if None)
             timeout: Command timeout in seconds (default: 30)
+
+        Note:
+            If no validator is provided, creates one with allow_shell_features=True
+            to allow validated shell commands with pipes, redirects, etc.
         """
-        self.validator = validator or get_default_validator()
+        if validator is None:
+            # Create validator that allows shell features
+            # This is necessary for SecureShellExecutor to work with shell commands
+            self.validator = CommandValidator(allow_shell_features=True)
+        else:
+            self.validator = validator
+
         self.timeout = timeout
         logger.debug(
             f"Initialized SecureShellExecutor with timeout={timeout}s, "
+            f"allow_shell_features={self.validator.allow_shell_features}, "
             f"allowed_commands={len(self.validator.allowed_commands)}"
         )
 

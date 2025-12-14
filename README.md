@@ -13,6 +13,21 @@ SysHealth is a comprehensive Linux system health monitoring tool that combines t
 - **Modular Architecture**: Extensible collector-based design
 - **YAML Configuration**: Centralized configuration with environment variable overrides
 - **Debug Mode**: Detailed logging and troubleshooting capabilities
+- **Security Hardened**: Defense-in-depth architecture with comprehensive input validation
+
+## Security
+
+SysHealth implements comprehensive security controls including:
+
+- **Path Traversal Prevention**: All file operations validated to prevent directory traversal attacks
+- **Command Injection Prevention**: Whitelist-based command validation with metacharacter detection
+- **Email Security**: RFC 5322 compliant validation and header injection prevention
+- **Input Sanitization**: All user inputs validated and sanitized before use
+- **Secure Execution**: Commands executed with minimal privileges using safe patterns
+
+For detailed security information, attack vectors mitigated, and best practices, see **[SECURITY.md](SECURITY.md)**.
+
+**Security Test Coverage**: 47 automated tests covering path traversal, command injection, email security, input validation, and boundary conditions.
 
 ## Requirements
 

@@ -2,6 +2,7 @@
 
 """Security and system health information collector."""
 
+from typing import override
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
@@ -27,6 +28,7 @@ class SecurityInfoCollector(SystemInfoCollector):
         super().__init__(executor)
         self.config = config or SystemInfoConfig()
 
+    @override
     def collect(self) -> dict[str, str]:
         """Collect security and system health information.
 
@@ -56,6 +58,10 @@ class SecurityInfoCollector(SystemInfoCollector):
             ),
             "cron_jobs": self._safe_execute(
                 self.config.cron_jobs_command, "Crontab information not available"
+            ),
+            "firewall": self._safe_execute(
+                self.config.firewall_command,
+                "Firewall information not available (requires root)",
             ),
         }
 

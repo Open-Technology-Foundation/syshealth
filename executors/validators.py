@@ -36,10 +36,53 @@ class CommandValidator:
     preventing command injection and ensuring only approved commands
     are run.
 
+    Security Model:
+        The validator implements a layered security approach:
+
+        1. **Whitelist Enforcement**: Only commands in allowed_commands can execute
+        2. **Shell Feature Control**: Shell metacharacters allowed only if explicitly enabled
+        3. **Always Blocked Patterns**: Some patterns are NEVER allowed regardless of settings:
+           - Command substitution: $(cmd) or `cmd`
+           - Variable expansion: ${var}
+           - Code execution: eval, exec, source
+           - Null bytes and non-printable characters
+
+        When allow_shell_features=False (default):
+            - Blocks ALL shell metacharacters: ; & | ` $ ( ) < > \\n \\r
+            - Safest mode - use for simple commands
+
+        When allow_shell_features=True:
+            - Allows: pipes (|), redirects (< > >>), chaining (; && ||), wildcards (* ? [])
+            - Still blocks: command substitution, variable expansion, eval/exec/source
+            - Use ONLY with SecureShellExecutor for validated system monitoring commands
+            - Rationale: System monitoring requires pipes (e.g., "ps aux | grep python")
+                        but never needs command substitution or code execution
+
+        Security Rationale:
+            - Pipes/redirects: Needed for data processing, safe with validated commands
+            - Command substitution: Never needed, enables arbitrary code execution
+            - Variable expansion: Not needed for monitoring, enables data exfiltration
+            - Wildcards: Needed for file operations, relatively safe with path restrictions
+
     Attributes:
         allowed_commands: Set of command names that are whitelisted
         allow_shell_features: Whether to allow commands with shell features
             (pipes, redirects) - these require special handling
+
+    Examples:
+        >>> # Strict mode - only simple commands
+        >>> validator = CommandValidator(allow_shell_features=False)
+        >>> validator.validate_command("ps aux")  # OK
+        (True, '')
+        >>> validator.validate_command("ps aux | grep python")  # BLOCKED - pipe
+        (False, 'Command contains dangerous shell metacharacter: |')
+
+        >>> # Shell mode - for validated monitoring commands only
+        >>> validator = CommandValidator(allow_shell_features=True)
+        >>> validator.validate_command("ps aux | grep python")  # OK - monitoring
+        (True, '')
+        >>> validator.validate_command("ps $(whoami)")  # BLOCKED - substitution
+        (False, 'Command substitution not allowed')
     """
 
     allowed_commands: set[str] = field(default_factory=set)
@@ -73,6 +116,7 @@ class CommandValidator:
             "hostname",
             "uptime",
             "date",
+            "lsb_release",
             # Hardware
             "lshw",
             "lscpu",
@@ -106,6 +150,7 @@ class CommandValidator:
             "rkhunter",
             # Package management (read-only)
             "apt-get",  # Only with specific safe arguments
+            "apt",
             "dpkg",
             "rpm",
             "yum",
@@ -115,9 +160,28 @@ class CommandValidator:
             "head",
             "tail",
             "wc",
+            "echo",
             # System status
             "systemctl",
             "service",
+            "systemd-detect-virt",
+            # Time synchronization
+            "timedatectl",  # Systemd time control
+            "chronyc",      # Chrony NTP client
+            "ntpq",         # NTP query tool
+            # Security
+            "ufw",          # Ubuntu firewall
+            "iptables",     # Generic firewall
+            # Storage management
+            "mdadm",        # Software RAID
+            "lvs",          # LVM logical volumes
+            "vgs",          # LVM volume groups
+            "pvs",          # LVM physical volumes
+            # Thermal monitoring
+            "sensors",      # Temperature sensors (lm-sensors)
+            # Utilities
+            "timeout",      # Prevents command hanging
+            "crontab",      # Scheduled task monitoring
         }
 
     def validate_command(self, command: str) -> tuple[bool, str]:
@@ -179,7 +243,9 @@ class CommandValidator:
             logger.warning(f"Command not in allowed list: {base_command}")
             return False, f"Command not in allowed list: {base_command}"
 
-        # Check for shell metacharacters
+        # Check for shell metacharacters (only if shell features disabled)
+        # When shell features are enabled, pipes/redirects/semicolons are allowed
+        # for system monitoring commands like "ps aux | grep python"
         if not self.allow_shell_features:
             for char in SHELL_METACHARACTERS:
                 if char in command:
@@ -191,18 +257,23 @@ class CommandValidator:
                         f"Command contains dangerous shell metacharacter: {char}",
                     )
 
-        # Check for command substitution patterns
+        # SECURITY: Check for command substitution patterns
+        # These are ALWAYS blocked, even with allow_shell_features=True
+        # Command substitution enables arbitrary code execution: $(malicious_cmd)
+        # System monitoring never requires command substitution
         if "$(" in command or "`" in command:
             logger.error(f"Command substitution detected in: {command[:50]}")
             return False, "Command substitution not allowed"
 
-        # Check for suspicious patterns
+        # SECURITY: Check for suspicious patterns
+        # These are ALWAYS blocked regardless of allow_shell_features setting
+        # Rationale: System monitoring never needs eval/exec/source/variable expansion
         suspicious_patterns = [
-            r"\$\{",  # Variable expansion ${var}
-            r"\beval\b",  # eval command
-            r"\bexec\b",  # exec command
-            r"\bsource\b",  # source command
-            r"\b\.\s+",  # dot command (. script.sh)
+            r"\$\{",  # Variable expansion ${var} - enables data exfiltration
+            r"\beval\b",  # eval command - arbitrary code execution
+            r"\bexec\b",  # exec command - arbitrary code execution
+            r"\bsource\b",  # source command - executes external scripts
+            r"\b\.\s+",  # dot command (. script.sh) - executes external scripts
         ]
 
         for pattern in suspicious_patterns:

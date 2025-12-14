@@ -65,7 +65,9 @@ class ConfigManager:
     def _load_yaml_config(self) -> None:
         """Load configuration from YAML file."""
         try:
-            # Ensure config path is not None before creating Path
+            # Defensive check: Ensure config path is not None before creating Path
+            # This should not normally occur since _load_config() always sets the path,
+            # but provides robustness if this method is called independently
             if self._config_path is None:
                 logger.warning("Configuration path is None")
                 self._config = {}
@@ -287,7 +289,12 @@ def get_config() -> ConfigManager:
 
 
 def reload_config() -> None:
-    """Reload the global configuration."""
+    """Reload the global configuration.
+
+    This function reloads the global configuration if it has been initialized.
+    If no global config exists yet (reload_config() called before get_config()),
+    this function does nothing - the config will be created on first get_config() call.
+    """
     global _global_config
     if _global_config is not None:
         _global_config.reload()

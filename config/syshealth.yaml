@@ -13,10 +13,10 @@ language:
 
 # Claude AI configuration
 claude:
-  model: "claude-sonnet-4-0"  # Default Claude model
+  model: "claude-sonnet-4-5"  # Default Claude model
   max_tokens: 32000  # Maximum tokens for API responses
   temperature: 0.1  # Response temperature (0.0-1.0, lower = more focused)
-  timeout: 300  # API timeout in seconds
+  timeout: 420  # API timeout in seconds
 
 # Output configuration
 output:
@@ -49,9 +49,9 @@ email:
 
 # System command limits and timeouts
 commands:
-  timeout: 30  # Default command timeout in seconds
-  ssh_timeout: 60  # SSH command timeout in seconds
-  max_output_lines: 1000  # Maximum lines to capture from command output
+  timeout: 60  # Default command timeout in seconds
+  ssh_timeout: 120  # SSH command timeout in seconds
+  max_output_lines: 2000  # Maximum lines to capture from command output
   retry_attempts: 3  # Number of retry attempts for failed commands
   retry_delay: 2    # Delay between retries in seconds
 
@@ -68,11 +68,20 @@ dependencies:
     - "top"      # Process monitoring
     - "netstat"  # Network statistics
     - "ss"       # Socket statistics (alternative to netstat)
+    - "lsblk"    # Block device listing (disk detection)
+    - "smartctl" # SMART disk health monitoring (moved from optional)
   optional:
-    - "pandoc"   # Markdown to HTML conversion for email
-    - "smartctl" # SMART disk health monitoring
-    - "rkhunter" # Rootkit detection
-    - "chkrootkit" # Alternative rootkit detection
+    - "pandoc"      # Markdown to HTML conversion for email
+    - "sensors"     # Temperature monitoring (lm-sensors package)
+    - "timedatectl" # Time synchronization status (systemd)
+    - "chronyc"     # Chrony NTP client
+    - "ntpq"        # NTP query tool
+    - "ufw"         # Ubuntu firewall
+    - "iptables"    # Generic Linux firewall
+    - "mdadm"       # Software RAID management
+    - "lvm2"        # LVM tools (lvs, vgs, pvs)
+    - "rkhunter"    # Rootkit detection
+    - "chkrootkit"  # Alternative rootkit detection
 
 # Security settings
 security:

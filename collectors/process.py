@@ -2,6 +2,7 @@
 
 """Process information collector."""
 
+from typing import override
 
 from collectors.base import SystemInfoCollector
 from config.system_commands import SystemInfoConfig
@@ -27,6 +28,7 @@ class ProcessInfoCollector(SystemInfoCollector):
         super().__init__(executor)
         self.config = config or SystemInfoConfig()
 
+    @override
     def collect(self) -> dict[str, str]:
         """Collect process information.
 

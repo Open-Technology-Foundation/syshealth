@@ -44,6 +44,15 @@ from config import (
     get_output_directory,
 )
 
+# Import security utilities
+from security import (
+    sanitize_hostname,
+    sanitize_language,
+    sanitize_subject,
+    validate_output_path,
+    validate_recipient_list,
+)
+
 # Constants
 VERSION = "1.0.0"  # Current version of SysHealth
 
@@ -159,60 +168,6 @@ def check_dependencies() -> None:
             "For better results, install: sudo apt-get install "
             + " ".join(missing_recommended)
         )
-
-
-def execute_command(command: str, host: str | None = None) -> str:
-    """Execute a shell command locally or on a remote host.
-
-    This function handles both local command execution and remote execution
-    via SSH. It captures command output and handles errors appropriately.
-    For remote execution, SSH key-based authentication is expected to be
-    already configured.
-
-    Args:
-        command (str): The shell command to execute
-        host (str | None): The hostname to run the command on; if None or
-            matches the local hostname, executes locally
-
-    Returns:
-        str: The command output (stdout) if successful, or error message
-            if the command fails
-
-    Note:
-        - For local execution, shell=True is used to support pipes and redirects
-        - For remote execution, the command is passed as an argument to ssh
-        - Non-zero exit codes are handled gracefully with warning logs
-    """
-    try:
-        # Declare full_cmd with explicit Union type for mypy
-        full_cmd: str | list[str]
-        shell: bool
-
-        if host and host != socket.gethostname():
-            # For SSH remote execution, pass the entire command as a single string
-            full_cmd = ["ssh", host, command]
-            shell = False
-        else:
-            # For local execution with pipes and redirects, use shell=True
-            full_cmd = command
-            shell = True
-
-        result = subprocess.run(
-            full_cmd,
-            capture_output=True,
-            text=True,
-            check=False,  # Don't raise exception on non-zero exit
-            shell=shell,
-        )
-
-        if result.returncode != 0:
-            logger.warning(f"Command returned non-zero exit status: {command}")
-            return f"Error: {result.stderr}"
-
-        return result.stdout
-    except Exception as e:
-        logger.warning(f"Command failed: {command} - {e}")
-        return f"Error executing command: {str(e)}"
 
 
 def collect_system_info(host: str) -> dict[str, str]:
@@ -353,19 +308,24 @@ def call_claude_api(
         debug_dir = os.path.join(output_dir, debug_subdir)
         os.makedirs(debug_dir, exist_ok=True)
 
+        # Sanitize inputs for secure filename
+        hostname = system_info.get("hostname", "unknown")
+        safe_hostname = sanitize_hostname(hostname)
+        safe_language = sanitize_language(language)
+
         # Save the prompt to a file
         timestamp_format = config.get("output.timestamp_format", "%Y%m%d-%H%M%S")
         debug_extension = config.get("output.file_extensions.debug", ".txt")
         timestamp = datetime.datetime.now().strftime(timestamp_format)
-        hostname = system_info.get("hostname", "unknown")
-        prompt_file = os.path.join(
-            debug_dir, f"{hostname}-{language}-prompt-{timestamp}{debug_extension}"
-        )
+        debug_filename = f"{safe_hostname}-{safe_language}-prompt-{timestamp}{debug_extension}"
+
+        # Validate path to prevent traversal attacks
+        prompt_file = validate_output_path(debug_dir, debug_filename)
 
         with open(prompt_file, "w") as f:
             f.write(prompt)
 
-        logger.debug(f"Saved prompt to: {prompt_file}")
+        logger.debug(f"Saved debug prompt securely to: {prompt_file}")
 
     return response
 
@@ -385,23 +345,40 @@ def save_report(report: str, host: str, output_dir: str, language: str) -> str:
     Returns:
         str: The absolute path to the saved report file
 
+    Raises:
+        ValueError: If hostname or language contains invalid characters
+        ValueError: If path validation fails (potential path traversal)
+
+    Security Notes:
+        - Hostname and language are sanitized to prevent path traversal
+        - Final path is validated to ensure it stays within output_dir
+        - Prevents directory traversal attacks (../, absolute paths, etc.)
+
     Example filename format: hostname-en-20250515-072617.md
     """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # Sanitize inputs to prevent path traversal
+    safe_host = sanitize_hostname(host)
+    safe_language = sanitize_language(language)
 
     config = get_config()
     timestamp_format = config.get("output.timestamp_format", "%Y%m%d-%H%M%S")
     file_extension = config.get("output.file_extensions.report", ".md")
 
     timestamp = datetime.datetime.now().strftime(timestamp_format)
-    filename = f"{host}-{language}-{timestamp}{file_extension}"
-    filepath = os.path.join(output_dir, filename)
+    filename = f"{safe_host}-{safe_language}-{timestamp}{file_extension}"
 
-    with open(filepath, "w") as f:
+    # Create output directory if needed (before validation)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Validate path to prevent traversal attacks (after directory exists)
+    validated_filepath = validate_output_path(output_dir, filename)
+
+    with open(validated_filepath, "w") as f:
         f.write(report)
 
-    return filepath
+    logger.info(f"Report saved securely to: {validated_filepath}")
+    return validated_filepath
 
 
 def send_email(report_path: str, recipients: list[str], host: str) -> bool:
@@ -418,14 +395,29 @@ def send_email(report_path: str, recipients: list[str], host: str) -> bool:
     Returns:
         bool: True if email was sent successfully, False otherwise
 
+    Raises:
+        ValueError: If recipient validation fails
+
     Requirements:
         - Local SMTP server running on localhost
         - pandoc installed for markdown to HTML conversion (falls back to plain text)
+
+    Security Notes:
+        - All recipient email addresses are validated against RFC 5322
+        - Subject line is sanitized to prevent header injection
+        - Hostname is sanitized before use in subject
+        - Duplicate recipients are automatically removed
 
     Note:
         The email includes both HTML formatted content and a markdown attachment
     """
     try:
+        # Validate and sanitize recipients first (prevent header injection)
+        try:
+            validated_recipients = validate_recipient_list(recipients)
+        except ValueError as e:
+            logger.error(f"Recipient validation failed: {e}")
+            return False
         # Get the report content
         with open(report_path, "r") as f:
             report_content = f.read()
@@ -454,7 +446,7 @@ def send_email(report_path: str, recipients: list[str], host: str) -> bool:
             logger.warning(f"Failed to convert markdown to HTML: {e}")
             html_content = f"<pre>{report_content}</pre>"  # Fallback if pandoc fails
 
-        # Create the email message
+        # Create the email message with security validations
         config = get_config()
         sender_name = config.get("email.sender.name", "SysHealth")
         domain_suffix = config.get("email.sender.domain_suffix", "@hostname").replace(
@@ -464,10 +456,17 @@ def send_email(report_path: str, recipients: list[str], host: str) -> bool:
             "email.subject_template", "System Health Report for {hostname}"
         )
 
+        # Sanitize hostname before use in subject (prevent header injection)
+        safe_hostname = sanitize_hostname(host)
+
+        # Create subject and sanitize it (prevent header injection)
+        subject = subject_template.format(hostname=safe_hostname)
+        safe_subject = sanitize_subject(subject)
+
         msg = MIMEMultipart()
         msg["From"] = f"{sender_name} <syshealth{domain_suffix}>"
-        msg["To"] = ", ".join(recipients)
-        msg["Subject"] = subject_template.format(hostname=host)
+        msg["To"] = ", ".join(validated_recipients)  # Use validated recipients
+        msg["Subject"] = safe_subject  # Use sanitized subject
 
         # Add HTML version of the report
         msg.attach(MIMEText(html_content, "html"))
@@ -487,7 +486,7 @@ def send_email(report_path: str, recipients: list[str], host: str) -> bool:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=smtp_timeout) as smtp:
             smtp.send_message(msg)
 
-        logger.info(f"Report sent via email to: {', '.join(recipients)}")
+        logger.info(f"Report sent via email to: {', '.join(validated_recipients)}")
         return True
     except Exception as e:
         logger.error(f"Failed to send email: {e}")

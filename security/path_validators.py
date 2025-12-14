@@ -64,7 +64,8 @@ def validate_output_path(base_dir: str, filename: str) -> str:
 
         # Check if base directory is writable
         if not os.access(str(base_path), os.W_OK):
-            raise PermissionError(f"Base directory is not writable: {base_dir}")
+            # Raise as OSError so it's caught by the exception handler below
+            raise OSError(f"Base directory is not writable: {base_dir}")
 
         # Construct target path and resolve it
         # This handles any ".." or "." components and resolves symlinks
@@ -95,8 +96,9 @@ def validate_output_path(base_dir: str, filename: str) -> str:
 
         return str(target_path)
 
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, PermissionError) as e:
         # Handle Path.resolve() errors (broken symlinks, permission issues)
+        # Wrap all exceptions in ValueError for consistent error handling
         logger.error(
             f"Path validation error: base='{base_dir}', filename='{filename}', "
             f"error={e}"
@@ -185,14 +187,16 @@ def validate_directory_path(directory: str) -> str:
             if not parent.is_dir():
                 raise ValueError(f"Parent path is not a directory: '{parent}'")
             if not os.access(str(parent), os.W_OK):
-                raise PermissionError(
+                # Raise as OSError so it's caught by the exception handler below
+                raise OSError(
                     f"Cannot create directory - parent not writable: '{parent}'"
                 )
 
         logger.debug(f"Directory validation successful: '{directory}'")
         return str(resolved_path)
 
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, PermissionError) as e:
+        # Wrap all exceptions in ValueError for consistent error handling
         logger.error(f"Directory validation error: '{directory}', error={e}")
         raise ValueError(f"Invalid directory path: {e}") from e
 
