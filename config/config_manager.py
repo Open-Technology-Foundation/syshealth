@@ -229,8 +229,12 @@ class ConfigManager:
         Returns:
             str: Expanded absolute path
         """
-        # Expand user home directory
-        expanded = os.path.expanduser(path)
+        # Expand user home directory (prefer SUDO_USER's home when run via sudo)
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and path.startswith("~"):
+            expanded = os.path.expanduser(f"~{sudo_user}") + path[1:]
+        else:
+            expanded = os.path.expanduser(path)
         # Expand environment variables
         expanded = os.path.expandvars(expanded)
         # Convert to absolute path

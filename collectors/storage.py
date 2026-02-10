@@ -50,7 +50,7 @@ class StorageInfoCollector(SystemInfoCollector):
         for line in result.strip().split("\n"):
             if "disk" in line:
                 parts = line.strip().split()
-                if parts:
+                if parts and not parts[0].startswith("zd"):
                     disks.append(parts[0])
 
         # Return fallback if no disks detected
