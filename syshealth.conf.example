@@ -1,0 +1,44 @@
+# /etc/syshealth/syshealth.conf - System-wide defaults for syshealth
+# Uncomment and modify values as needed.
+# Precedence: CLI flags > environment variables > this file > built-in defaults
+
+# --- API Keys ---
+# Set keys here instead of (or in addition to) env vars or key files.
+# Env vars (e.g. ANTHROPIC_API_KEY) always take precedence over this file.
+
+#ANTHROPIC_API_KEY=sk-ant-...
+#OPENAI_API_KEY=sk-...
+#GEMINI_API_KEY=...
+#DEEPSEEK_API_KEY=sk-...
+#XAI_API_KEY=xai-...
+#OLLAMA_HOST=http://localhost:11434
+
+# --- General Settings ---
+
+# AI model for analysis (provider auto-detected from model name)
+#MODEL=claude-sonnet-4-5
+
+# Maximum response tokens
+#MAX_TOKENS=32000
+
+# Response temperature (0.0-1.0)
+#TEMPERATURE=0.1
+
+# API timeout in seconds
+#API_TIMEOUT=420
+
+# Default output directory for reports
+#OUTPUT_DIR=/root/syshealth
+
+# Default report language
+#LANGUAGE=en
+
+# Comma-separated email recipients
+#MAIL_RECIPIENTS=
+
+# --- Alert Thresholds ---
+#DISK_WARN=80
+#DISK_CRIT=90
+#MEM_WARN=85
+#MEM_CRIT=95
+#CPU_WARN=2.0

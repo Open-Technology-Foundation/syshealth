@@ -1,70 +1,753 @@
-#!/bin/bash
-#shellcheck disable=SC2155,SC1091
+#!/usr/bin/bash
+#shellcheck disable=SC2155,SC2046,SC2015,SC2034
 set -euo pipefail
+shopt -s inherit_errexit shift_verbose extglob nullglob
 
-###############################################################################
-# SysHealth - System Health Report Generator
-#
-# This script serves as a wrapper for the main syshealth.py Python script.
-# It manages the virtual environment, checks for API key requirements,
-# ensures script permissions, and properly passes arguments to the Python script.
-#
-# The script requires the ANTHROPIC_API_KEY environment variable to be set,
-# except when displaying help information.
-#
-# Usage:
-#   ./syshealth [options] [hosts...]
-#
-# Example:
-#   ./syshealth -v -L spanish server1 server2
-###############################################################################
+# SysHealth - System health monitoring and AI analysis tool
+# Collects system information and uses LLM APIs to generate health reports
 
-# Determine absolute path to script directory, even if called via symlink
-declare -r SCRIPT_DIR="$(cd "$(dirname "$(readlink -en "${BASH_SOURCE[0]}")")" && pwd)"
-# Path to the main Python script
-declare -r PYTHON_SCRIPT="$SCRIPT_DIR"/syshealth.py
-# Path to the Python virtual environment
-declare -r VENV_DIR="$SCRIPT_DIR"/.venv
+# Security: lock down PATH and IFS
+readonly -- PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+export PATH
+IFS=$' \t\n'
 
-# Verify the main Python script exists
-[[ -f "$PYTHON_SCRIPT" ]] || {
-  >&2 echo "Error: Could not find syshealth.py in $SCRIPT_DIR"
-  exit 1
-}
+declare -r VERSION=2.0.0
+declare -r SCRIPT_PATH=$(realpath -- "$0")
+declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
-# Ensure the Python script has executable permissions
-[[ -x "$PYTHON_SCRIPT" ]] || chmod +x "$PYTHON_SCRIPT"
+# Hardcoded defaults
+declare -- MODEL=claude-sonnet-4-5
+declare -i MAX_TOKENS=32000
+declare -- TEMPERATURE=0.1
+declare -i API_TIMEOUT=420
+declare -- OUTPUT_DIR="$HOME/syshealth"
+declare -- LANGUAGE=en
+declare -- MAIL_RECIPIENTS=''
 
-# Special case: Allow help display without API key requirements
-# This ensures users can see usage information without needing an API key
-if [[ "$*" == *"--help"* || "$*" == *"-h"* ]]; then
-  # Activate the virtual environment if it exists
-  [[ -d "$VENV_DIR" && -f "$VENV_DIR"/bin/activate ]] && source "$VENV_DIR"/bin/activate
-  "$PYTHON_SCRIPT" "$@"
-  exit 0
+# Provider settings (derived from MODEL at runtime)
+declare -- PROVIDER=''
+declare -- API_URL=''
+declare -- API_KEY=''
+
+# Thresholds
+declare -i DISK_WARN=80 DISK_CRIT=90
+declare -i MEM_WARN=85 MEM_CRIT=95
+declare -- CPU_WARN=2.0
+
+# Load system config (env vars take precedence over config file)
+declare -r SYSHEALTH_CONF=/etc/syshealth/syshealth.conf
+if [[ -r "$SYSHEALTH_CONF" ]]; then
+  # Preserve env vars so config file doesn't clobber them
+  declare -- _saved_anthropic=${ANTHROPIC_API_KEY:-}
+  declare -- _saved_openai=${OPENAI_API_KEY:-}
+  declare -- _saved_gemini=${GEMINI_API_KEY:-}
+  declare -- _saved_deepseek=${DEEPSEEK_API_KEY:-}
+  declare -- _saved_xai=${XAI_API_KEY:-}
+  declare -- _saved_ollama=${OLLAMA_HOST:-}
+  # shellcheck source=/dev/null
+  . "$SYSHEALTH_CONF"
+  # Restore env vars over config values
+  [[ -n "$_saved_anthropic" ]] && ANTHROPIC_API_KEY=$_saved_anthropic
+  [[ -n "$_saved_openai" ]]    && OPENAI_API_KEY=$_saved_openai
+  [[ -n "$_saved_gemini" ]]    && GEMINI_API_KEY=$_saved_gemini
+  [[ -n "$_saved_deepseek" ]]  && DEEPSEEK_API_KEY=$_saved_deepseek
+  [[ -n "$_saved_xai" ]]       && XAI_API_KEY=$_saved_xai
+  [[ -n "$_saved_ollama" ]]    && OLLAMA_HOST=$_saved_ollama
+  unset _saved_anthropic _saved_openai _saved_gemini _saved_deepseek _saved_xai _saved_ollama
 fi
 
-# Verify that the required API key environment variable is set
-# The API key is required for all operations except displaying help
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
-  >&2 echo "Error: ANTHROPIC_API_KEY environment variable not set"
-  >&2 echo "Please set your API key with: export ANTHROPIC_API_KEY='your-api-key'"
-  >&2 echo "For help, run: $0 --help"
-  exit 1
+# Environment variables override config file
+[[ -n "${SYSHEALTH_MODEL:-}" ]]       && MODEL=$SYSHEALTH_MODEL
+[[ -n "${SYSHEALTH_MAX_TOKENS:-}" ]]  && MAX_TOKENS=$SYSHEALTH_MAX_TOKENS
+[[ -n "${SYSHEALTH_TEMPERATURE:-}" ]] && TEMPERATURE=$SYSHEALTH_TEMPERATURE
+[[ -n "${SYSHEALTH_TIMEOUT:-}" ]]     && API_TIMEOUT=$SYSHEALTH_TIMEOUT
+[[ -n "${SYSHEALTH_OUTPUT_DIR:-}" ]]  && OUTPUT_DIR=$SYSHEALTH_OUTPUT_DIR
+[[ -n "${SYSHEALTH_LANGUAGE:-}" ]]    && LANGUAGE=$SYSHEALTH_LANGUAGE
+
+# Flags
+declare -i VERBOSE=0 DEBUG=0 QUIET=0
+
+# TTY-aware colors
+if [[ -t 1 && -t 2 ]]; then
+  declare -r NC=$'\033[0m'
+  declare -r RED=$'\033[0;31m' GREEN=$'\033[0;32m'
+  declare -r YELLOW=$'\033[0;33m' CYAN=$'\033[0;36m'
+else
+  declare -r NC='' RED='' GREEN='' YELLOW='' CYAN=''
+fi
+
+# --------------------------------------------------------------------------------
+# Messaging functions
+# --------------------------------------------------------------------------------
+
+_msg() {
+  local -- caller=${FUNCNAME[1]:-info}
+  local -- prefix icon color
+  case $caller in
+    info)    icon='◉'; color="$CYAN" ;;
+    warn)    icon='▲'; color="$YELLOW" ;;
+    error)   icon='✗'; color="$RED" ;;
+    success) icon='✓'; color="$GREEN" ;;
+    vecho)   icon='◉'; color="$CYAN" ;;
+    debug)   icon='⦿'; color="$CYAN" ;;
+    *)       icon='◉'; color="$CYAN" ;;
+  esac
+  prefix="${color}${icon}${NC}"
+  >&2 printf '%s %s\n' "$prefix" "$*"
 }
 
-# Verify that the Python virtual environment exists and is properly configured
-# This is required for the Python dependencies to be available
-[[ -d "$VENV_DIR" && -f "$VENV_DIR"/bin/activate ]] || {
-  >&2 echo "Virtual environment (.venv) for $PYTHON_SCRIPT not found!"
-  >&2 echo "Run the install.sh script to set up the virtual environment"
-  exit 1
+vecho()   { ((VERBOSE)) || return 0; _msg "$@"; }
+info()    { ((QUIET)) && return 0 ||:; _msg "$@"; }
+warn()    { _msg "$@"; }
+error()   { _msg "$@"; }
+success() { _msg "$@"; }
+debug()   { ((DEBUG)) || return 0; _msg "$@"; }
+die()     { (($# < 2)) || error "${@:2}"; exit "${1:-0}"; }
+noarg()   { (($# > 1)) && [[ ${2:0:1} != '-' ]] || die 2 "Option ${1@Q} requires an argument"; }
+
+# --------------------------------------------------------------------------------
+# Utility functions
+# --------------------------------------------------------------------------------
+
+check_dependencies() {
+  local -- cmd
+  for cmd in curl jq; do
+    command -v "$cmd" >/dev/null || die 18 "'$cmd' required (apt install $cmd)"
+  done
+
+  # Resolve provider from model name and load API key
+  resolve_provider
+  resolve_api_key
+
+  # Check Ollama reachability (warning only)
+  if [[ "$PROVIDER" == ollama ]]; then
+    local -- ollama_base=${API_URL%/v1/chat/completions}
+    curl -sf --max-time 5 "${ollama_base}/api/tags" >/dev/null 2>&1 \
+      || warn "Ollama not reachable at $ollama_base"
+  fi
+
+  # Warn about recommended tools
+  local -a missing=()
+  for cmd in lshw lscpu df free ss lsblk smartctl; do
+    command -v "$cmd" >/dev/null || missing+=("$cmd")
+  done
+  ((${#missing[@]} == 0)) || warn "Missing recommended tools: ${missing[*]}"
 }
 
-# Activate the Python virtual environment to ensure all dependencies are available
-source "$VENV_DIR"/bin/activate
+sanitize_filename() {
+  local -- input=$1
+  # Strip path separators and special chars, keep alphanumeric, dots, hyphens, underscores
+  input=${input//[^a-zA-Z0-9._-]/}
+  echo "$input"
+}
 
-# Execute the Python script with all arguments passed to this wrapper
-"$VENV_DIR"/bin/python "$PYTHON_SCRIPT" "$@"
+run_cmd() {
+  local -- host=$1 cmd=$2
+  if [[ "$host" == "$HOSTNAME" || "$host" == localhost ]]; then
+    bash -c "$cmd" 2>&1 ||:
+  else
+    ssh -o ConnectTimeout=30 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "$host" "$cmd" 2>&1 ||:
+  fi
+}
+
+json_encode() {
+  # Safely JSON-encode stdin using jq
+  jq -Rs .
+}
+
+resolve_provider() {
+  # Auto-detect provider from MODEL name — sets PROVIDER and API_URL
+  case $MODEL in
+    claude-*)
+      PROVIDER=anthropic
+      API_URL='https://api.anthropic.com/v1/messages'
+      ;;
+    gpt-*|o1-*|o3-*|o4-*|chatgpt-*)
+      PROVIDER=openai
+      API_URL='https://api.openai.com/v1/chat/completions'
+      ;;
+    gemini-*)
+      PROVIDER=gemini
+      API_URL='https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+      ;;
+    deepseek-*)
+      PROVIDER=deepseek
+      API_URL='https://api.deepseek.com/chat/completions'
+      ;;
+    grok-*)
+      PROVIDER=xai
+      API_URL='https://api.x.ai/v1/chat/completions'
+      ;;
+    *)
+      PROVIDER=ollama
+      API_URL="${OLLAMA_HOST:-http://localhost:11434}/v1/chat/completions"
+      ;;
+  esac
+  vecho "Provider: $PROVIDER ($API_URL)"
+}
+
+resolve_api_key() {
+  # Resolve API key for the active provider
+  case $PROVIDER in
+    ollama)
+      API_KEY=''
+      return 0
+      ;;
+    anthropic)
+      # Anthropic: env var > key files
+      API_KEY=${ANTHROPIC_API_KEY:-}
+      if [[ -z "$API_KEY" ]]; then
+        local -- keyfile
+        for keyfile in \
+          /etc/anthropic/api_key \
+          "${XDG_CONFIG_HOME:-$HOME/.config}"/anthropic/api_key; do
+          if [[ -f "$keyfile" && -r "$keyfile" ]]; then
+            API_KEY=$(< "$keyfile")
+            API_KEY=${API_KEY%%[[:space:]]*}
+            debug "API key loaded from $keyfile"
+          fi
+        done
+      fi
+      [[ -n "$API_KEY" ]] || die 1 \
+        'ANTHROPIC_API_KEY not set. Set env var or create ~/.config/anthropic/api_key'
+      ;;
+    openai)   API_KEY=${OPENAI_API_KEY:-}   ;;
+    gemini)   API_KEY=${GEMINI_API_KEY:-}    ;;
+    deepseek) API_KEY=${DEEPSEEK_API_KEY:-}  ;;
+    xai)      API_KEY=${XAI_API_KEY:-}       ;;
+  esac
+
+  # Non-Ollama, non-Anthropic: check key is present
+  if [[ "$PROVIDER" != anthropic && "$PROVIDER" != ollama && -z "$API_KEY" ]]; then
+    local -- key_var
+    case $PROVIDER in
+      openai)   key_var=OPENAI_API_KEY   ;;
+      gemini)   key_var=GEMINI_API_KEY   ;;
+      deepseek) key_var=DEEPSEEK_API_KEY ;;
+      xai)      key_var=XAI_API_KEY      ;;
+    esac
+    die 1 "$key_var not set for provider ${PROVIDER@Q}"
+  fi
+}
+
+# --------------------------------------------------------------------------------
+# Help and version
+# --------------------------------------------------------------------------------
+
+show_help() {
+  cat <<EOT
+$SCRIPT_NAME $VERSION - System Health Report Generator
+
+Collects system information and uses AI to generate comprehensive
+health reports with diagnostics and recommendations.
+
+Usage: $SCRIPT_NAME [OPTIONS] [HOST...]
+
+Options:
+  -v, --verbose        Verbose output (print report to terminal)
+  -d, --debug          Debug mode (save prompts, implies -v)
+  -q, --quiet          Suppress info messages
+  -L, --language LANG  Report language (default: $LANGUAGE)
+  -m, --model MODEL    AI model (default: $MODEL)
+                       Provider auto-detected from model name:
+                         claude-*    → Anthropic
+                         gpt-*/o1-*  → OpenAI
+                         gemini-*    → Google Gemini
+                         deepseek-*  → DeepSeek
+                         grok-*      → xAI
+                         other       → Ollama (local)
+  -o, --output-dir DIR Output directory (default: $OUTPUT_DIR)
+  --mail EMAILS        Comma-separated email recipients
+  -V, --version        Show version
+  -h, --help           Show this help
+
+Configuration:
+  /etc/syshealth/syshealth.conf  System-wide defaults (see syshealth.conf.example)
+  Precedence: CLI flags > environment variables > config file > built-in defaults
+
+Environment variables:
+  ANTHROPIC_API_KEY      Anthropic API key
+  OPENAI_API_KEY         OpenAI API key
+  GEMINI_API_KEY         Google Gemini API key
+  DEEPSEEK_API_KEY       DeepSeek API key
+  XAI_API_KEY            xAI/Grok API key
+  OLLAMA_HOST            Ollama URL (default: http://localhost:11434)
+  SYSHEALTH_MODEL        Default model
+  SYSHEALTH_MAX_TOKENS   Max response tokens
+  SYSHEALTH_TEMPERATURE  Response temperature
+  SYSHEALTH_TIMEOUT      API timeout in seconds
+  SYSHEALTH_OUTPUT_DIR   Default output directory
+  SYSHEALTH_LANGUAGE     Default language
+
+Examples:
+  $SCRIPT_NAME -v                                    # Local (Anthropic default)
+  $SCRIPT_NAME -v -m gpt-4o server1                  # OpenAI
+  $SCRIPT_NAME -v -m gemini-2.0-flash host1 host2    # Google Gemini
+  $SCRIPT_NAME -v -m llama3.1                        # Ollama (local)
+  $SCRIPT_NAME -v -L spanish -m deepseek-chat srv1   # DeepSeek, Spanish
+  $SCRIPT_NAME -d -v --mail admin@x.com srv1         # Debug + email
+EOT
+}
+
+# --------------------------------------------------------------------------------
+# Data collection functions
+# --------------------------------------------------------------------------------
+
+collect_basic() {
+  local -- host=$1
+  local -- uname os_release uptime_info time_sync virt container
+
+  vecho "Collecting basic system info from $host..."
+  uname=$(run_cmd "$host" 'uname -a' | json_encode)
+  os_release=$(run_cmd "$host" 'lsb_release -a 2>/dev/null || cat /etc/*release 2>/dev/null' | json_encode)
+  uptime_info=$(run_cmd "$host" 'uptime' | json_encode)
+  time_sync=$(run_cmd "$host" 'timedatectl status 2>/dev/null || chronyc tracking 2>/dev/null || ntpq -p 2>/dev/null || echo "Time synchronization information not available"' | json_encode)
+  virt=$(run_cmd "$host" 'systemd-detect-virt 2>/dev/null || dmesg | grep -i hypervisor | head -5 2>/dev/null || echo "Virtualization info not available"' | json_encode)
+  container=$(run_cmd "$host" 'cat /proc/1/cgroup 2>/dev/null | head -5 || echo "Container information not available"' | json_encode)
+
+  printf '"hostname": %s,\n' "$(echo "$host" | json_encode)"
+  printf '"timestamp": %s,\n' "$(date -Iseconds | json_encode)"
+  printf '"uname": %s,\n' "$uname"
+  printf '"os_release": %s,\n' "$os_release"
+  printf '"uptime": %s,\n' "$uptime_info"
+  printf '"time_sync": %s,\n' "$time_sync"
+  printf '"virtualization": %s,\n' "$virt"
+  printf '"container_info": %s,\n' "$container"
+}
+
+collect_hardware() {
+  local -- host=$1
+  local -- hardware cpu_model cpu_info memory swap_info temperature
+
+  vecho "Collecting hardware info from $host..."
+  hardware=$(run_cmd "$host" 'lshw -short 2>/dev/null || echo "Hardware listing unavailable (install: sudo apt install lshw)"' | json_encode)
+  cpu_model=$(run_cmd "$host" "lscpu | grep 'Model name' 2>/dev/null || grep -i cpu /proc/cpuinfo | grep -i model | head -1" | json_encode)
+  cpu_info=$(run_cmd "$host" 'lscpu 2>/dev/null || cat /proc/cpuinfo || echo "CPU information unavailable"' | json_encode)
+  memory=$(run_cmd "$host" 'free -h' | json_encode)
+  swap_info=$(run_cmd "$host" 'grep -i swap /proc/swaps 2>/dev/null || echo "Swap information not available"' | json_encode)
+  temperature=$(run_cmd "$host" 'sensors 2>/dev/null || cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null || echo "Temperature information not available (install: sudo apt install lm-sensors)"' | json_encode)
+
+  printf '"hardware": %s,\n' "$hardware"
+  printf '"cpu_model": %s,\n' "$cpu_model"
+  printf '"cpu_info": %s,\n' "$cpu_info"
+  printf '"memory": %s,\n' "$memory"
+  printf '"swap_info": %s,\n' "$swap_info"
+  printf '"temperature": %s,\n' "$temperature"
+}
+
+collect_storage() {
+  local -- host=$1
+  local -- disk_usage block_devs fstab raid_status raid_detail
+  local -- lvm_vols lvm_groups lvm_phys disk_health
+
+  vecho "Collecting storage info from $host..."
+  disk_usage=$(run_cmd "$host" 'df -h' | json_encode)
+  block_devs=$(run_cmd "$host" 'lsblk --noheadings --output NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null || echo "Block device information not available"' | json_encode)
+  fstab=$(run_cmd "$host" "cat /etc/fstab | grep -vE '^(#|\$)' 2>/dev/null || echo 'fstab not available'" | json_encode)
+  raid_status=$(run_cmd "$host" 'cat /proc/mdstat 2>/dev/null || echo "No software RAID configured"' | json_encode)
+  raid_detail=$(run_cmd "$host" 'mdadm --detail --scan 2>/dev/null || echo "mdadm not available or no RAID configured"' | json_encode)
+  lvm_vols=$(run_cmd "$host" 'lvs --noheadings 2>/dev/null || echo "LVM not configured or lvs not available"' | json_encode)
+  lvm_groups=$(run_cmd "$host" 'vgs --noheadings 2>/dev/null || echo "LVM not configured or vgs not available"' | json_encode)
+  lvm_phys=$(run_cmd "$host" 'pvs --noheadings 2>/dev/null || echo "LVM not configured or pvs not available"' | json_encode)
+
+  # Dynamic disk health detection — check SMART on all physical disks
+  local -- disk_list
+  disk_list=$(run_cmd "$host" 'lsblk --noheadings --output NAME,TYPE 2>/dev/null')
+  local -a disks=()
+  local -- line dname health_results='' disk health
+  if [[ -n "$disk_list" ]]; then
+    while IFS= read -r line; do
+      if [[ "$line" == *disk* ]]; then
+        dname=${line%% *}
+        dname=${dname// /}
+        # Skip zd (ZFS) devices
+        [[ "$dname" == zd* ]] || disks+=("$dname")
+      fi
+    done <<< "$disk_list"
+  fi
+  ((${#disks[@]} > 0)) || disks=(nvme0n1)
+
+  for disk in "${disks[@]}"; do
+    health=$(run_cmd "$host" "timeout 30s smartctl -H /dev/$disk 2>/dev/null || echo 'SMART data unavailable for $disk (requires root or smartctl not installed)'")
+    health_results+="=== /dev/$disk ===
+$health
+
+"
+  done
+  disk_health=$(echo "$health_results" | json_encode)
+
+  printf '"disk_usage": %s,\n' "$disk_usage"
+  printf '"block_devices": %s,\n' "$block_devs"
+  printf '"disk_health": %s,\n' "$disk_health"
+  printf '"fstab": %s,\n' "$fstab"
+  printf '"raid_status": %s,\n' "$raid_status"
+  printf '"raid_detail": %s,\n' "$raid_detail"
+  printf '"lvm_volumes": %s,\n' "$lvm_vols"
+  printf '"lvm_groups": %s,\n' "$lvm_groups"
+  printf '"lvm_physical": %s,\n' "$lvm_phys"
+}
+
+collect_process() {
+  local -- host=$1
+  local -- top_cpu top_mem
+
+  vecho "Collecting process info from $host..."
+  top_cpu=$(run_cmd "$host" 'ps --no-headers -eo pid,pcpu,pmem,comm --sort=-%cpu | head -n 10' | json_encode)
+  top_mem=$(run_cmd "$host" 'ps --no-headers -eo pid,pcpu,pmem,comm --sort=-%mem | head -n 10' | json_encode)
+
+  printf '"top_cpu_processes": %s,\n' "$top_cpu"
+  printf '"top_mem_processes": %s,\n' "$top_mem"
+}
+
+collect_network() {
+  local -- host=$1
+  local -- interfaces ports
+
+  vecho "Collecting network info from $host..."
+  interfaces=$(run_cmd "$host" 'ip -br addr show 2>/dev/null || ip addr show 2>/dev/null || ifconfig 2>/dev/null || cat /proc/net/dev 2>/dev/null || echo "Network information not available"' | json_encode)
+  ports=$(run_cmd "$host" 'timeout 15s ss -tuln 2>/dev/null || timeout 15s netstat -tuln 2>/dev/null || echo "Port information not available"' | json_encode)
+
+  printf '"network_interfaces": %s,\n' "$interfaces"
+  printf '"listening_ports": %s,\n' "$ports"
+}
+
+collect_security() {
+  local -- host=$1
+  local -- failed_svc errors auth updates rootkit cron firewall
+
+  vecho "Collecting security info from $host..."
+  failed_svc=$(run_cmd "$host" 'timeout 15s systemctl list-units --state=failed 2>/dev/null || echo "Failed services information not available"' | json_encode)
+  errors=$(run_cmd "$host" 'timeout 30s journalctl -p err --lines=20 --no-pager -q 2>/dev/null || echo "Error logs not available"' | json_encode)
+  auth=$(run_cmd "$host" 'grep -i fail /var/log/auth.log 2>/dev/null | tail -20 || echo "Authentication logs not available"' | json_encode)
+  updates=$(run_cmd "$host" 'apt list --upgradable 2>/dev/null | head -20 || echo "Update information not available"' | json_encode)
+  rootkit=$(run_cmd "$host" 'cat /var/log/chkrootkit/log.today 2>/dev/null || echo "Rootkit check logs not available (install: sudo apt install chkrootkit)"' | json_encode)
+  cron=$(run_cmd "$host" "crontab -l | grep -vE '^(#|\$)' 2>/dev/null || echo 'Crontab information not available'" | json_encode)
+  firewall=$(run_cmd "$host" 'ufw status verbose 2>/dev/null || iptables -L -n -v 2>/dev/null || echo "Firewall information not available (requires root)"' | json_encode)
+
+  printf '"failed_services": %s,\n' "$failed_svc"
+  printf '"recent_errors": %s,\n' "$errors"
+  printf '"auth_failures": %s,\n' "$auth"
+  printf '"available_updates": %s,\n' "$updates"
+  printf '"rootkit_check": %s,\n' "$rootkit"
+  printf '"cron_jobs": %s,\n' "$cron"
+  # Last field — no trailing comma
+  printf '"firewall": %s\n' "$firewall"
+}
+
+# --------------------------------------------------------------------------------
+# JSON assembly
+# --------------------------------------------------------------------------------
+
+build_system_info() {
+  local -- host=$1
+  {
+    printf '{\n'
+    collect_basic "$host"
+    collect_hardware "$host"
+    collect_storage "$host"
+    collect_process "$host"
+    collect_network "$host"
+    collect_security "$host"
+    printf '}\n'
+  } | jq .
+}
+
+# --------------------------------------------------------------------------------
+# LLM API
+# --------------------------------------------------------------------------------
+
+build_prompt() {
+  local -- system_json=$1
+
+  cat <<EOF
+You are a skilled system administrator tasked with analyzing a Linux system's health.
+Analyze the following system information and create a comprehensive health report.
+
+The report should be in markdown format with these sections:
+1. System Overview - Brief overview of the system (hostname, OS version, uptime)
+2. Hardware Configuration - Details about CPU, memory, and other hardware components
+3. Storage Status - Disk usage, mount points, block devices, and potential issues
+4. Memory Usage - RAM and swap usage, memory allocation, and potential issues
+5. CPU Performance - CPU load, utilization, top processes, and potential bottlenecks
+6. Network Configuration - Network interfaces, listening ports, and potential issues
+7. System Health - Failed services, system errors, auth failures, available updates
+8. Critical Issues - Highlight any critical issues that need immediate attention
+9. Warnings - Highlight potential problems that aren't yet critical
+10. Recommendations - Specific suggestions for improving system health and performance
+
+Be direct and critical in your assessment. Focus on potential problems and their solutions.
+
+Look for these critical issues (include in Critical Issues section):
+- Very high disk usage (>${DISK_CRIT}% is critical)
+- Critical memory shortage (<$((100 - MEM_CRIT))% available)
+- High swap usage (>80% used)
+- Failed system services
+- Root or privileged access attempts
+- Signs of system compromise
+- Disk health problems (SMART errors)
+- Kernel-level errors
+- Authentication security issues
+
+Look for these warning signs (include in Warnings section):
+- High disk usage (>${DISK_WARN}% is concerning)
+- Low memory availability (<$((100 - MEM_WARN))% available)
+- Moderate swap usage
+- High CPU load sustained over time (>${CPU_WARN} load average)
+- Unusual network connections or listening ports
+- Multiple authentication failures
+- Outdated packages with security implications
+- Unusual cron jobs or scheduled tasks
+
+Recommendations should be specific to the system's issues, not generic advice.
+For example, if a specific partition is running out of space, recommend actions for that partition.
+
+Output language: ${LANGUAGE}
+
+System Information:
+-------------------
+${system_json}
+EOF
+}
+
+call_api() {
+  local -- system_json=$1
+  local -- prompt
+  prompt=$(build_prompt "$system_json")
+
+  debug "Calling $PROVIDER API with model: $MODEL"
+
+  local -- response text err_msg
+
+  if [[ "$PROVIDER" == anthropic ]]; then
+    # Anthropic Messages API format
+    response=$(
+      printf '%s' "$prompt" |
+      jq -Rs \
+        --arg model "$MODEL" \
+        --argjson max_tokens "$MAX_TOKENS" \
+        --arg temp "$TEMPERATURE" \
+        '{model:$model, max_tokens:$max_tokens, temperature:($temp|tonumber),
+          messages:[{role:"user", content:.}]}' |
+      curl -s --max-time "$API_TIMEOUT" \
+        -K <(printf -- '-H "x-api-key: %s"\n' "$API_KEY") \
+        -H 'content-type: application/json' \
+        -H 'anthropic-version: 2023-06-01' \
+        -d @- \
+        "$API_URL"
+    ) || die 23 'API request failed'
+
+    text=$(jq -r '.content[0].text // empty' <<< "$response")
+    if [[ -z "$text" ]]; then
+      err_msg=$(jq -r '.error.message // .error.type // "Unknown API error"' <<< "$response")
+      die 1 "API error: $err_msg"
+    fi
+  else
+    # OpenAI-compatible chat completions format (OpenAI, Gemini, DeepSeek, xAI, Ollama)
+    response=$(
+      printf '%s' "$prompt" |
+      jq -Rs \
+        --arg model "$MODEL" \
+        --argjson max_tokens "$MAX_TOKENS" \
+        --arg temp "$TEMPERATURE" \
+        '{model:$model, max_tokens:$max_tokens, temperature:($temp|tonumber),
+          messages:[{role:"user", content:.}]}' |
+      if [[ -n "$API_KEY" ]]; then
+        curl -s --max-time "$API_TIMEOUT" \
+          -K <(printf -- '-H "Authorization: Bearer %s"\n' "$API_KEY") \
+          -H 'content-type: application/json' \
+          -d @- \
+          "$API_URL"
+      else
+        curl -s --max-time "$API_TIMEOUT" \
+          -H 'content-type: application/json' \
+          -d @- \
+          "$API_URL"
+      fi
+    ) || die 23 'API request failed'
+
+    text=$(jq -r '.choices[0].message.content // empty' <<< "$response")
+    if [[ -z "$text" ]]; then
+      err_msg=$(jq -r '.error.message // .error.type // "Unknown API error"' <<< "$response")
+      die 1 "API error: $err_msg"
+    fi
+  fi
+
+  echo "$text"
+}
+
+# --------------------------------------------------------------------------------
+# Output functions
+# --------------------------------------------------------------------------------
+
+save_report() {
+  local -- report=$1 host=$2 language=$3
+  local -- safe_host safe_lang timestamp filename filepath
+
+  safe_host=$(sanitize_filename "$host")
+  safe_lang=$(sanitize_filename "$language")
+  timestamp=$(date +'%Y%m%d-%H%M%S')
+  filename="${safe_host}-${safe_lang}-${timestamp}.md"
+
+  mkdir -p -- "$OUTPUT_DIR"
+  filepath="$OUTPUT_DIR/$filename"
+
+  printf '%s' "$report" > "$filepath"
+  info "Report saved to: $filepath"
+  echo "$filepath"
+}
+
+save_debug_prompt() {
+  local -- prompt=$1 host=$2 language=$3
+  local -- safe_host safe_lang timestamp filename debug_dir filepath
+
+  safe_host=$(sanitize_filename "$host")
+  safe_lang=$(sanitize_filename "$language")
+  timestamp=$(date +'%Y%m%d-%H%M%S')
+  filename="${safe_host}-${safe_lang}-prompt-${timestamp}.txt"
+  debug_dir="$OUTPUT_DIR/debug"
+
+  mkdir -p -- "$debug_dir"
+  filepath="$debug_dir/$filename"
+
+  printf '%s' "$prompt" > "$filepath"
+  debug "Prompt saved to: $filepath"
+}
+
+send_email() {
+  local -- report_path=$1 host=$2
+  local -- report_content subject
+
+  report_content=$(< "$report_path")
+  subject="System Health Report for $(sanitize_filename "$host")"
+
+  if command -v pandoc >/dev/null; then
+    # Convert to HTML and send with attachment
+    local -- html_content
+    html_content=$(echo "$report_content" | pandoc -f markdown -t html 2>/dev/null) || html_content="<pre>$report_content</pre>"
+
+    local -- boundary="syshealth-$(date +%s)"
+    local -- filename=${report_path##*/}
+
+    {
+      printf 'Subject: %s\n' "$subject"
+      printf 'From: SysHealth <syshealth@%s>\n' "$HOSTNAME"
+      printf 'To: %s\n' "$MAIL_RECIPIENTS"
+      printf 'MIME-Version: 1.0\n'
+      printf 'Content-Type: multipart/mixed; boundary="%s"\n\n' "$boundary"
+      printf -- '--%s\n' "$boundary"
+      printf 'Content-Type: text/html; charset=utf-8\n\n'
+      printf '%s\n\n' "$html_content"
+      printf -- '--%s\n' "$boundary"
+      printf 'Content-Type: text/plain; charset=utf-8\n'
+      printf 'Content-Disposition: attachment; filename="%s"\n\n' "$filename"
+      printf '%s\n' "$report_content"
+      printf -- '--%s--\n' "$boundary"
+    } | sendmail -t 2>/dev/null || {
+      warn "Failed to send email for $host"
+      return 1
+    }
+  else
+    # Plain text fallback
+    echo "$report_content" | mail -s "$subject" "$MAIL_RECIPIENTS" 2>/dev/null || {
+      warn "Failed to send email for $host (install pandoc for HTML emails)"
+      return 1
+    }
+  fi
+
+  success "Email sent for $host to $MAIL_RECIPIENTS"
+}
+
+# --------------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------------
+
+cleanup() {
+  local -i exitcode=${1:-$?}
+  trap - SIGINT SIGTERM EXIT
+  exit "$exitcode"
+}
+
+main() {
+  trap 'cleanup $?' SIGINT SIGTERM EXIT
+  local -a hosts=()
+
+  # Argument parsing
+  while (($#)); do
+    case $1 in
+      -h|--help)    show_help; exit 0 ;;
+      -V|--version) echo "$SCRIPT_NAME $VERSION"; exit 0 ;;
+      -v|--verbose) VERBOSE+=1 ;;
+      -d|--debug)   DEBUG=1; VERBOSE=1 ;;
+      -q|--quiet)   QUIET=1 ;;
+      -L|--language) noarg "$@"; shift; LANGUAGE=$1 ;;
+      -m|--model)    noarg "$@"; shift; MODEL=$1 ;;
+      -o|--output-dir) noarg "$@"; shift; OUTPUT_DIR=$1 ;;
+      --mail)        noarg "$@"; shift; MAIL_RECIPIENTS=$1 ;;
+      -[vdqVh]*)    set -- '' $(printf -- '-%c ' $(grep -o . <<< "${1:1}")) "${@:2}" ;;
+      -*)           die 22 "Invalid option ${1@Q}" ;;
+      *)            hosts+=("$1") ;;
+    esac
+    shift
+  done
+
+  # Default to local hostname if no hosts specified
+  ((${#hosts[@]} > 0)) || hosts=("$HOSTNAME")
+
+  readonly -- MODEL LANGUAGE OUTPUT_DIR MAIL_RECIPIENTS
+  readonly -- VERBOSE DEBUG QUIET MAX_TOKENS API_TIMEOUT
+
+  check_dependencies
+
+  readonly -- PROVIDER API_URL API_KEY
+
+  mkdir -p -- "$OUTPUT_DIR" || die 1 "Cannot create output directory ${OUTPUT_DIR@Q}"
+
+  local -a report_hosts=() report_files=()
+  local -- host system_json prompt report report_path
+
+  for host in "${hosts[@]}"; do
+    info "Analyzing host: $host"
+
+    # Collect system information as JSON
+    system_json=$(build_system_info "$host")
+    debug "Collected ${#system_json} bytes of system data"
+
+    # Save debug prompt if in debug mode
+    if ((DEBUG)); then
+      prompt=$(build_prompt "$system_json")
+      save_debug_prompt "$prompt" "$host" "$LANGUAGE"
+    fi
+
+    # Call LLM API
+    report=$(call_api "$system_json")
+
+    # Save report
+    report_path=$(save_report "$report" "$host" "$LANGUAGE")
+    report_hosts+=("$host")
+    report_files+=("$report_path")
+
+    # Display report if verbose
+    if ((VERBOSE)); then
+      printf '\n%s\n' '================================================================================'
+      printf 'HEALTH REPORT FOR %s:\n' "$host"
+      printf '%s\n' '================================================================================'
+      printf '%s\n' "$report"
+      printf '%s\n' '================================================================================'
+    fi
+  done
+
+  # Send emails if requested
+  if [[ -n "$MAIL_RECIPIENTS" ]]; then
+    local -i i
+    for ((i=0; i<${#report_hosts[@]}; i+=1)); do
+      send_email "${report_files[$i]}" "${report_hosts[$i]}"
+    done
+  fi
+
+  success 'All reports generated successfully'
+}
+
+main "$@"
 
 #fin
