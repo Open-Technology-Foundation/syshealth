@@ -1,5 +1,10 @@
 #!/usr/bin/bash
 #shellcheck disable=SC2155,SC2046,SC2015,SC2034
+
+# Require Bash 5.2+ before any version-gated builtin (inherit_errexit, ${var@Q})
+((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 2))) \
+  || { >&2 printf '%s: requires Bash >= 5.2 (have %s)\n' "${0##*/}" "${BASH_VERSION:-unknown}"; exit 2; }
+
 set -euo pipefail
 shopt -s inherit_errexit shift_verbose extglob nullglob
 
@@ -59,13 +64,28 @@ if [[ -r "$SYSHEALTH_CONF" ]]; then
   unset _saved_anthropic _saved_openai _saved_gemini _saved_deepseek _saved_xai _saved_ollama
 fi
 
-# Environment variables override config file
-[[ -n "${SYSHEALTH_MODEL:-}" ]]       && MODEL=$SYSHEALTH_MODEL
-[[ -n "${SYSHEALTH_MAX_TOKENS:-}" ]]  && MAX_TOKENS=$SYSHEALTH_MAX_TOKENS
+# Environment variables override config file. Integer values are validated
+# before assignment: a non-numeric env var would otherwise abort with an opaque
+# "unbound variable" from the declare -i arithmetic context (set -u).
+[[ -n "${SYSHEALTH_MODEL:-}" ]] && MODEL=$SYSHEALTH_MODEL
+if [[ -n "${SYSHEALTH_MAX_TOKENS:-}" ]]; then
+  [[ $SYSHEALTH_MAX_TOKENS == +([0-9]) ]] \
+    || { >&2 printf '%s: SYSHEALTH_MAX_TOKENS must be a positive integer (got %q)\n' "${0##*/}" "$SYSHEALTH_MAX_TOKENS"; exit 2; }
+  MAX_TOKENS=$SYSHEALTH_MAX_TOKENS
+fi
 [[ -n "${SYSHEALTH_TEMPERATURE:-}" ]] && TEMPERATURE=$SYSHEALTH_TEMPERATURE
-[[ -n "${SYSHEALTH_TIMEOUT:-}" ]]     && API_TIMEOUT=$SYSHEALTH_TIMEOUT
-[[ -n "${SYSHEALTH_OUTPUT_DIR:-}" ]]  && OUTPUT_DIR=$SYSHEALTH_OUTPUT_DIR
-[[ -n "${SYSHEALTH_LANGUAGE:-}" ]]    && LANGUAGE=$SYSHEALTH_LANGUAGE
+if [[ -n "${SYSHEALTH_TIMEOUT:-}" ]]; then
+  [[ $SYSHEALTH_TIMEOUT == +([0-9]) ]] \
+    || { >&2 printf '%s: SYSHEALTH_TIMEOUT must be a positive integer (got %q)\n' "${0##*/}" "$SYSHEALTH_TIMEOUT"; exit 2; }
+  API_TIMEOUT=$SYSHEALTH_TIMEOUT
+fi
+[[ -n "${SYSHEALTH_OUTPUT_DIR:-}" ]] && OUTPUT_DIR=$SYSHEALTH_OUTPUT_DIR
+[[ -n "${SYSHEALTH_LANGUAGE:-}" ]]   && LANGUAGE=$SYSHEALTH_LANGUAGE
+
+# Validate the final temperature (string-typed; covers config-file and env so a
+# bad value fails fast here instead of as a misleading "API request failed" in jq)
+[[ $TEMPERATURE == +([0-9]) || $TEMPERATURE == +([0-9]).*([0-9]) ]] \
+  || { >&2 printf '%s: TEMPERATURE must be numeric, e.g. 0.1 (got %q)\n' "${0##*/}" "$TEMPERATURE"; exit 2; }
 
 # Flags
 declare -i VERBOSE=0 DEBUG=0 QUIET=0
@@ -546,7 +566,7 @@ call_api() {
         --arg temp "$TEMPERATURE" \
         '{model:$model, max_tokens:$max_tokens, temperature:($temp|tonumber),
           messages:[{role:"user", content:.}]}' |
-      curl -s --max-time "$API_TIMEOUT" \
+      curl -s --max-time "$API_TIMEOUT" --retry 3 --retry-delay 2 \
         -K <(printf -- '-H "x-api-key: %s"\n' "$API_KEY") \
         -H 'content-type: application/json' \
         -H 'anthropic-version: 2023-06-01' \
@@ -590,13 +610,13 @@ call_api() {
         --arg temp "$TEMPERATURE" \
         "$payload_filter" |
       if [[ -n "$API_KEY" ]]; then
-        curl -s --max-time "$API_TIMEOUT" \
+        curl -s --max-time "$API_TIMEOUT" --retry 3 --retry-delay 2 \
           -K <(printf -- '-H "Authorization: Bearer %s"\n' "$API_KEY") \
           -H 'content-type: application/json' \
           -d @- \
           "$API_URL"
       else
-        curl -s --max-time "$API_TIMEOUT" \
+        curl -s --max-time "$API_TIMEOUT" --retry 3 --retry-delay 2 \
           -H 'content-type: application/json' \
           -d @- \
           "$API_URL"
@@ -655,6 +675,14 @@ save_debug_prompt() {
 send_email() {
   local -- report_path=$1 host=$2
   local -- report_content subject
+
+  # Reject CR/LF in values that flow verbatim into RFC822 headers (header
+  # injection / Bcc exfiltration). MAIL_RECIPIENTS is checked at parse time;
+  # HOSTNAME is inherited from the environment, so re-check it here.
+  if [[ $HOSTNAME == *[$'\r\n']* || $MAIL_RECIPIENTS == *[$'\r\n']* ]]; then
+    warn "Refusing to send email for $host: CR/LF in HOSTNAME or recipients"
+    return 1
+  fi
 
   report_content=$(< "$report_path")
   subject="System Health Report for $(sanitize_filename "$host")"
@@ -721,7 +749,9 @@ main() {
       -L|--language) noarg "$@"; shift; LANGUAGE=$1 ;;
       -m|--model)    noarg "$@"; shift; MODEL=$1 ;;
       -o|--output-dir) noarg "$@"; shift; OUTPUT_DIR=$1 ;;
-      --mail)        noarg "$@"; shift; MAIL_RECIPIENTS=$1 ;;
+      --mail)        noarg "$@"; shift; MAIL_RECIPIENTS=$1
+                     [[ $MAIL_RECIPIENTS != *[$'\r\n']* ]] \
+                       || die 22 'Invalid --mail value (contains CR/LF)' ;;
       -[vdqVh]*)    set -- '' $(printf -- '-%c ' $(grep -o . <<< "${1:1}")) "${@:2}" ;;
       -*)           die 22 "Invalid option ${1@Q}" ;;
       *)            hosts+=("$1") ;;
