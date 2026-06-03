@@ -131,7 +131,7 @@ check_dependencies() {
   for cmd in lshw lscpu df free ss lsblk smartctl; do
     command -v "$cmd" >/dev/null || missing+=("$cmd")
   done
-  ((${#missing[@]} == 0)) || warn "Missing recommended tools: ${missing[*]}"
+  ((!${#missing[@]})) || warn "Missing recommended tools: ${missing[*]}"
 }
 
 sanitize_filename() {
@@ -149,6 +149,18 @@ run_cmd() {
     ssh -o ConnectTimeout=30 -o BatchMode=yes -o StrictHostKeyChecking=yes \
       "$host" "$cmd" 2>&1 ||:
   fi
+}
+
+check_host_reachable() {
+  # Preflight gate: verify a remote host answers SSH before any collection.
+  # Prevents fabricating a "health report" out of SSH connection-error text,
+  # which run_cmd's '2>&1 ||:' would otherwise capture as exit-0 output.
+  local -- host=$1
+  if [[ "$host" == "$HOSTNAME" || "$host" == localhost ]]; then
+    return 0
+  fi
+  ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    "$host" true 2>/dev/null
 }
 
 json_encode() {
@@ -366,7 +378,7 @@ collect_storage() {
       fi
     done <<< "$disk_list"
   fi
-  ((${#disks[@]} > 0)) || disks=(nvme0n1)
+  ((${#disks[@]})) || disks=(nvme0n1)
 
   for disk in "${disks[@]}"; do
     health=$(run_cmd "$host" "timeout 30s smartctl -H /dev/$disk 2>/dev/null || echo 'SMART data unavailable for $disk (requires root or smartctl not installed)'")
@@ -535,12 +547,13 @@ call_api() {
         -H 'anthropic-version: 2023-06-01' \
         -d @- \
         "$API_URL"
-    ) || die 23 'API request failed'
+    ) || { error 'API request failed'; return 23; }
 
     text=$(jq -r '.content[0].text // empty' <<< "$response")
     if [[ -z "$text" ]]; then
       err_msg=$(jq -r '.error.message // .error.type // "Unknown API error"' <<< "$response")
-      die 1 "API error: $err_msg"
+      error "API error: $err_msg"
+      return 1
     fi
   else
     # OpenAI-compatible chat completions format (OpenAI, Gemini, DeepSeek, xAI, Ollama)
@@ -564,12 +577,13 @@ call_api() {
           -d @- \
           "$API_URL"
       fi
-    ) || die 23 'API request failed'
+    ) || { error 'API request failed'; return 23; }
 
     text=$(jq -r '.choices[0].message.content // empty' <<< "$response")
     if [[ -z "$text" ]]; then
       err_msg=$(jq -r '.error.message // .error.type // "Unknown API error"' <<< "$response")
-      die 1 "API error: $err_msg"
+      error "API error: $err_msg"
+      return 1
     fi
   fi
 
@@ -692,7 +706,7 @@ main() {
   done
 
   # Default to local hostname if no hosts specified
-  ((${#hosts[@]} > 0)) || hosts=("$HOSTNAME")
+  ((${#hosts[@]})) || hosts=("$HOSTNAME")
 
   readonly -- MODEL LANGUAGE OUTPUT_DIR MAIL_RECIPIENTS
   readonly -- VERBOSE DEBUG QUIET MAX_TOKENS API_TIMEOUT
@@ -703,14 +717,27 @@ main() {
 
   mkdir -p -- "$OUTPUT_DIR" || die 1 "Cannot create output directory ${OUTPUT_DIR@Q}"
 
-  local -a report_hosts=() report_files=()
+  local -a report_hosts=() report_files=() failed_hosts=()
   local -- host system_json prompt report report_path
 
   for host in "${hosts[@]}"; do
     info "Analyzing host: $host"
 
-    # Collect system information as JSON
-    system_json=$(build_system_info "$host")
+    # H1: verify reachability first — never build a report from SSH error text
+    if ! check_host_reachable "$host"; then
+      warn "Skipping unreachable host: $host"
+      failed_hosts+=("$host")
+      continue
+    fi
+
+    # H2: contain per-host failures so one host cannot abort the whole batch.
+    # 'if !' suspends errexit/inherit_errexit for the substitution, so a failed
+    # collector or jq validation surfaces as a nonzero result instead of exiting.
+    if ! system_json=$(build_system_info "$host"); then
+      warn "Skipping $host: system information collection failed"
+      failed_hosts+=("$host")
+      continue
+    fi
     debug "Collected ${#system_json} bytes of system data"
 
     # Save debug prompt if in debug mode
@@ -720,10 +747,18 @@ main() {
     fi
 
     # Call LLM API
-    report=$(call_api "$system_json")
+    if ! report=$(call_api "$system_json"); then
+      warn "Skipping $host: API request failed"
+      failed_hosts+=("$host")
+      continue
+    fi
 
     # Save report
-    report_path=$(save_report "$report" "$host" "$LANGUAGE")
+    if ! report_path=$(save_report "$report" "$host" "$LANGUAGE"); then
+      warn "Skipping $host: could not save report"
+      failed_hosts+=("$host")
+      continue
+    fi
     report_hosts+=("$host")
     report_files+=("$report_path")
 
@@ -737,7 +772,7 @@ main() {
     fi
   done
 
-  # Send emails if requested
+  # Send emails if requested (only for hosts that produced a report)
   if [[ -n "$MAIL_RECIPIENTS" ]]; then
     local -i i
     for ((i=0; i<${#report_hosts[@]}; i+=1)); do
@@ -745,7 +780,15 @@ main() {
     done
   fi
 
-  success 'All reports generated successfully'
+  # Honest completion status — partial or total failure must not report success
+  local -i ok=${#report_hosts[@]} failed=${#failed_hosts[@]}
+  if ((!failed)); then
+    success "All reports generated successfully ($ok host(s))"
+  elif ((ok)); then
+    warn "Completed with errors: $ok succeeded, $failed failed (${failed_hosts[*]})"
+  else
+    die 1 "All hosts failed (${failed_hosts[*]})"
+  fi
 }
 
 main "$@"
