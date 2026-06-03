@@ -17,7 +17,10 @@ declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # Hardcoded defaults
 declare -- MODEL=claude-sonnet-4-5
-declare -i MAX_TOKENS=32000
+# 8192 stays within the output caps of the documented non-Claude models
+# (gpt-4o 16384, deepseek 8192, gemini/grok); raise via SYSHEALTH_MAX_TOKENS
+# for very detailed Claude reports.
+declare -i MAX_TOKENS=8192
 declare -- TEMPERATURE=0.1
 declare -i API_TIMEOUT=420
 declare -- OUTPUT_DIR="$HOME/syshealth"
@@ -175,7 +178,9 @@ resolve_provider() {
       PROVIDER=anthropic
       API_URL='https://api.anthropic.com/v1/messages'
       ;;
-    gpt-*|o1-*|o3-*|o4-*|chatgpt-*)
+    gpt-*|chatgpt-*|o[0-9]*)
+      # o[0-9]* covers bare (o1, o3) and suffixed (o3-mini, o4-mini) reasoning
+      # model names, plus future o-series, that the old o1-*/o3-*/o4-* globs missed
       PROVIDER=openai
       API_URL='https://api.openai.com/v1/chat/completions'
       ;;
@@ -557,14 +562,33 @@ call_api() {
     fi
   else
     # OpenAI-compatible chat completions format (OpenAI, Gemini, DeepSeek, xAI, Ollama)
+    # Newer OpenAI reasoning / GPT-5 models reject `max_tokens` (require
+    # `max_completion_tokens`) and reject any non-default `temperature`; the
+    # other OpenAI-compatible providers still use max_tokens + temperature.
+    local -- token_field='max_tokens'
+    local -i send_temp=1
+    if [[ $PROVIDER == openai ]]; then
+      case $MODEL in
+        o[0-9]*|gpt-5*) token_field='max_completion_tokens'; send_temp=0 ;;
+      esac
+    fi
+    # $model/$tf/$max_tokens/$temp are jq --arg variables, not bash expansions
+    local -- payload_filter
+    if ((send_temp)); then
+      # shellcheck disable=SC2016
+      payload_filter='{model:$model, ($tf):$max_tokens, temperature:($temp|tonumber), messages:[{role:"user", content:.}]}'
+    else
+      # shellcheck disable=SC2016
+      payload_filter='{model:$model, ($tf):$max_tokens, messages:[{role:"user", content:.}]}'
+    fi
     response=$(
       printf '%s' "$prompt" |
       jq -Rs \
         --arg model "$MODEL" \
+        --arg tf "$token_field" \
         --argjson max_tokens "$MAX_TOKENS" \
         --arg temp "$TEMPERATURE" \
-        '{model:$model, max_tokens:$max_tokens, temperature:($temp|tonumber),
-          messages:[{role:"user", content:.}]}' |
+        "$payload_filter" |
       if [[ -n "$API_KEY" ]]; then
         curl -s --max-time "$API_TIMEOUT" \
           -K <(printf -- '-H "Authorization: Bearer %s"\n' "$API_KEY") \

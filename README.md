@@ -88,7 +88,7 @@ All settings are configured via environment variables. No config files needed.
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | API key (required) | -- |
 | `SYSHEALTH_MODEL` | Claude model | `claude-sonnet-4-5` |
-| `SYSHEALTH_MAX_TOKENS` | Max response tokens | `32000` |
+| `SYSHEALTH_MAX_TOKENS` | Max response tokens | `8192` |
 | `SYSHEALTH_TEMPERATURE` | Response temperature | `0.1` |
 | `SYSHEALTH_TIMEOUT` | API timeout in seconds | `420` |
 | `SYSHEALTH_OUTPUT_DIR` | Report output directory | `~/syshealth` |

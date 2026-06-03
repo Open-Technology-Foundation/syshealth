@@ -18,8 +18,8 @@
 # AI model for analysis (provider auto-detected from model name)
 #MODEL=claude-sonnet-4-5
 
-# Maximum response tokens
-#MAX_TOKENS=32000
+# Maximum response tokens (default 8192; raise for very detailed Claude reports)
+#MAX_TOKENS=8192
 
 # Response temperature (0.0-1.0)
 #TEMPERATURE=0.1
