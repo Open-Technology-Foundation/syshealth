@@ -388,30 +388,31 @@ collect_storage() {
   lvm_groups=$(run_cmd "$host" 'vgs --noheadings 2>/dev/null || echo "LVM not configured or vgs not available"' | json_encode)
   lvm_phys=$(run_cmd "$host" 'pvs --noheadings 2>/dev/null || echo "LVM not configured or pvs not available"' | json_encode)
 
-  # Dynamic disk health detection — check SMART on all physical disks
+  # Dynamic disk health detection — SMART on physical disks (lsblk TYPE == disk)
   local -- disk_list
   disk_list=$(run_cmd "$host" 'lsblk --noheadings --output NAME,TYPE 2>/dev/null')
   local -a disks=()
-  local -- line dname health_results='' disk health
+  local -- dname dtype health_results='' disk health
   if [[ -n "$disk_list" ]]; then
-    while IFS= read -r line; do
-      if [[ "$line" == *disk* ]]; then
-        dname=${line%% *}
-        dname=${dname// /}
-        # Skip zd (ZFS) devices
-        [[ "$dname" == zd* ]] || disks+=("$dname")
-      fi
+    while read -r dname dtype; do
+      [[ "$dtype" == disk ]] || continue            # match the TYPE column, not any substring
+      [[ "$dname" == zd* ]] && continue             # skip ZFS zvols
+      [[ "$dname" == +([a-zA-Z0-9]) ]] || continue  # reject names with shell metacharacters
+      disks+=("$dname")
     done <<< "$disk_list"
   fi
-  ((${#disks[@]})) || disks=(nvme0n1)
 
-  for disk in "${disks[@]}"; do
-    health=$(run_cmd "$host" "timeout 30s smartctl -H /dev/$disk 2>/dev/null || echo 'SMART data unavailable for $disk (requires root or smartctl not installed)'")
-    health_results+="=== /dev/$disk ===
+  if ((${#disks[@]})); then
+    for disk in "${disks[@]}"; do
+      health=$(run_cmd "$host" "timeout 30s smartctl -H /dev/$disk 2>/dev/null || echo 'SMART data unavailable for $disk (requires root or smartctl not installed)'")
+      health_results+="=== /dev/$disk ===
 $health
 
 "
-  done
+    done
+  else
+    health_results='No physical disks detected for SMART analysis'
+  fi
   disk_health=$(echo "$health_results" | json_encode)
 
   printf '"disk_usage": %s,\n' "$disk_usage"
