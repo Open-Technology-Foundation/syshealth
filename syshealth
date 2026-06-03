@@ -1,5 +1,4 @@
 #!/usr/bin/bash
-#shellcheck disable=SC2155,SC2046,SC2015,SC2034
 
 # Require Bash 5.2+ before any version-gated builtin (inherit_errexit, ${var@Q})
 ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 2))) \
@@ -17,8 +16,9 @@ export PATH
 IFS=$' \t\n'
 
 declare -r VERSION=2.0.0
-declare -r SCRIPT_PATH=$(realpath -- "$0")
-declare -r SCRIPT_DIR=${SCRIPT_PATH%/*} SCRIPT_NAME=${SCRIPT_PATH##*/}
+SCRIPT_PATH=$(realpath -- "$0")
+readonly -- SCRIPT_PATH
+declare -r SCRIPT_NAME=${SCRIPT_PATH##*/}
 
 # Hardcoded defaults
 declare -- MODEL=claude-sonnet-4-5
@@ -692,8 +692,9 @@ send_email() {
     local -- html_content
     html_content=$(echo "$report_content" | pandoc -f markdown -t html 2>/dev/null) || html_content="<pre>$report_content</pre>"
 
-    local -- boundary="syshealth-$(date +%s)"
-    local -- filename=${report_path##*/}
+    local -- boundary filename
+    boundary="syshealth-$(date +%s)"
+    filename=${report_path##*/}
 
     {
       printf 'Subject: %s\n' "$subject"
@@ -752,7 +753,14 @@ main() {
       --mail)        noarg "$@"; shift; MAIL_RECIPIENTS=$1
                      [[ $MAIL_RECIPIENTS != *[$'\r\n']* ]] \
                        || die 22 'Invalid --mail value (contains CR/LF)' ;;
-      -[vdqVh]*)    set -- '' $(printf -- '-%c ' $(grep -o . <<< "${1:1}")) "${@:2}" ;;
+      -[vdqVh]*)
+        # de-cluster combined short flags (-vd -> -v -d) without the
+        # word-splitting + globbing of an unquoted command substitution
+        local -a _flags=()
+        local -i _i
+        for ((_i=1; _i<${#1}; _i+=1)); do _flags+=("-${1:_i:1}"); done
+        set -- '' "${_flags[@]}" "${@:2}"
+        ;;
       -*)           die 22 "Invalid option ${1@Q}" ;;
       *)            hosts+=("$1") ;;
     esac
