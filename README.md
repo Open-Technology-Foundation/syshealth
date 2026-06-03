@@ -1,16 +1,17 @@
 # SysHealth - AI-Powered System Health Monitor
 
-SysHealth is a single-file Bash tool that collects comprehensive Linux system information and uses Claude AI to generate detailed health reports with diagnostics and recommendations.
+SysHealth is a single-file Bash tool that collects comprehensive Linux system information and uses an LLM API -- Anthropic Claude by default, or OpenAI, Google Gemini, DeepSeek, xAI/Grok, or a local Ollama model -- to generate detailed health reports with diagnostics and recommendations.
 
 ## Features
 
 - **Single-file tool** -- no frameworks, no package managers, just Bash
 - **Comprehensive collection** -- hardware, storage, memory, CPU, network, and security data
-- **AI-powered analysis** -- Claude AI identifies issues and provides actionable recommendations
+- **AI-powered analysis** -- the configured LLM identifies issues and provides actionable recommendations
+- **Multi-provider** -- Anthropic, OpenAI, Gemini, DeepSeek, xAI/Grok, and Ollama, auto-detected from the model name
 - **Multi-host support** -- analyze local and remote systems in a single run
 - **Multi-language reports** -- generate reports in any language
 - **Email delivery** -- optional email reports with HTML formatting (via pandoc) or plain text
-- **Environment variable configuration** -- no config files to manage
+- **Flexible configuration** -- environment variables, CLI flags, or an optional system config file
 - **Debug mode** -- save prompts and enable verbose diagnostics
 - **Security hardened** -- PATH lockdown, API key protection via process substitution, input sanitization
 
@@ -19,7 +20,7 @@ SysHealth is a single-file Bash tool that collects comprehensive Linux system in
 - **Bash** 5.2+
 - **curl** -- API communication
 - **jq** -- JSON construction and parsing
-- **Anthropic API key** -- for Claude AI analysis
+- **An LLM API key** -- for the chosen provider (e.g. `ANTHROPIC_API_KEY`); not required for a local Ollama model
 - **ssh** -- for remote host analysis (key-based authentication)
 
 ### Recommended Tools
@@ -58,13 +59,36 @@ No virtual environments, no pip, no dependencies beyond `curl` and `jq`.
 
 ## Configuration
 
-### API Key
+Settings are resolved with this precedence (highest first):
 
-SysHealth looks for the Anthropic API key in this order:
+**CLI flags > environment variables > system config file > built-in defaults**
+
+The optional system config file is `/etc/syshealth/syshealth.conf` (see
+`syshealth.conf.example`). It is sourced at startup; a real environment variable
+still overrides a value set in the file.
+
+### Provider and API Key
+
+The provider is auto-detected from the model name (`-m` / `SYSHEALTH_MODEL`):
+
+| Model name | Provider | API key variable |
+|------------|----------|------------------|
+| `claude-*` | Anthropic (default) | `ANTHROPIC_API_KEY` |
+| `gpt-*`, `chatgpt-*`, `o1`/`o3`/… (o-series) | OpenAI | `OPENAI_API_KEY` |
+| `gemini-*` | Google Gemini | `GEMINI_API_KEY` |
+| `deepseek-*` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `grok-*` | xAI / Grok | `XAI_API_KEY` |
+| anything else | Ollama (local) | none -- uses `OLLAMA_HOST` |
+
+For **Anthropic**, the key is resolved in this order:
 
 1. `ANTHROPIC_API_KEY` environment variable
-2. `/etc/anthropic/api_key` (system-wide)
-3. `~/.config/anthropic/api_key` (per-user, takes precedence)
+2. config file (`/etc/syshealth/syshealth.conf`)
+3. `/etc/anthropic/api_key` (system-wide)
+4. `~/.config/anthropic/api_key` (per-user; wins over `/etc` if both exist)
+
+Other providers read their key from the environment (or the config file) only.
+Ollama needs no key.
 
 Set via environment variable:
 
@@ -72,7 +96,7 @@ Set via environment variable:
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-Or create a key file:
+Or create a key file (Anthropic only):
 
 ```bash
 mkdir -p ~/.config/anthropic
@@ -82,12 +106,15 @@ chmod 600 ~/.config/anthropic/api_key
 
 ### Environment Variables
 
-All settings are configured via environment variables. No config files needed.
-
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | API key (required) | -- |
-| `SYSHEALTH_MODEL` | Claude model | `claude-sonnet-4-5` |
+| `ANTHROPIC_API_KEY` | Anthropic API key | -- |
+| `OPENAI_API_KEY` | OpenAI API key | -- |
+| `GEMINI_API_KEY` | Google Gemini API key | -- |
+| `DEEPSEEK_API_KEY` | DeepSeek API key | -- |
+| `XAI_API_KEY` | xAI / Grok API key | -- |
+| `OLLAMA_HOST` | Ollama base URL | `http://localhost:11434` |
+| `SYSHEALTH_MODEL` | AI model (provider auto-detected from name) | `claude-sonnet-4-5` |
 | `SYSHEALTH_MAX_TOKENS` | Max response tokens | `8192` |
 | `SYSHEALTH_TEMPERATURE` | Response temperature | `0.1` |
 | `SYSHEALTH_TIMEOUT` | API timeout in seconds | `420` |
@@ -104,7 +131,7 @@ All settings are configured via environment variables. No config files needed.
 | `-d, --debug` | Save prompts, implies `-v` | off |
 | `-q, --quiet` | Suppress info messages | off |
 | `-L, --language LANG` | Report language | `en` |
-| `-m, --model MODEL` | Claude model | `claude-sonnet-4-5` |
+| `-m, --model MODEL` | AI model (provider auto-detected from name) | `claude-sonnet-4-5` |
 | `-o, --output-dir DIR` | Output directory | `~/syshealth` |
 | `--mail EMAILS` | Comma-separated email recipients | -- |
 | `-V, --version` | Show version | -- |
@@ -121,6 +148,11 @@ syshealth -v -L spanish server1
 
 # Multiple hosts with a specific model
 syshealth -v -m claude-sonnet-4-5 host1 host2
+
+# Other providers (auto-detected from the model name)
+syshealth -v -m gpt-4o server1                 # OpenAI
+syshealth -v -m gemini-2.0-flash host1         # Google Gemini
+syshealth -v -m llama3.1                        # local Ollama (no API key)
 
 # Debug mode with email delivery
 syshealth -d -v --mail admin@example.com server1
@@ -179,7 +211,7 @@ CLI arguments → parse options and hosts
           │  Assemble JSON    │
           │         │         │
           │         ▼         │
-          │  call_claude_api()│  curl → Anthropic Messages API
+          │  call_api()       │  curl → provider LLM API
           │         │         │
           │         ▼         │
           │  save_report()    │  ~/syshealth/host-lang-timestamp.md
