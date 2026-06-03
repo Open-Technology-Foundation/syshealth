@@ -745,7 +745,8 @@ cleanup() {
 
 main() {
   trap 'cleanup $?' SIGINT SIGTERM EXIT
-  local -a hosts=()
+  local -a hosts=() _flags=()
+  local -i _i
 
   # Argument parsing
   while (($#)); do
@@ -764,8 +765,7 @@ main() {
       -[vdqVh]*)
         # de-cluster combined short flags (-vd -> -v -d) without the
         # word-splitting + globbing of an unquoted command substitution
-        local -a _flags=()
-        local -i _i
+        _flags=()
         for ((_i=1; _i<${#1}; _i+=1)); do _flags+=("-${1:_i:1}"); done
         set -- '' "${_flags[@]}" "${@:2}"
         ;;
