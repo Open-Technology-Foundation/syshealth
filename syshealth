@@ -655,10 +655,13 @@ save_report() {
   timestamp=$(date +'%Y%m%d-%H%M%S')
   filename="${safe_host}-${safe_lang}-${timestamp}.md"
 
-  mkdir -p -- "$OUTPUT_DIR"
+  # Propagate failure explicitly: the caller guards this with
+  # 'if ! report_path=$(save_report ...)', which suspends set -e, so relying on
+  # errexit alone would let a failed write return a bogus path as success.
+  mkdir -p -- "$OUTPUT_DIR" || { error "Cannot create output directory ${OUTPUT_DIR@Q}"; return 1; }
   filepath="$OUTPUT_DIR/$filename"
 
-  printf '%s' "$report" > "$filepath"
+  printf '%s' "$report" > "$filepath" || { error "Cannot write report to ${filepath@Q}"; return 5; }
   info "Report saved to: $filepath"
   echo "$filepath"
 }
@@ -673,10 +676,11 @@ save_debug_prompt() {
   filename="${safe_host}-${safe_lang}-prompt-${timestamp}.txt"
   debug_dir="$OUTPUT_DIR/debug"
 
-  mkdir -p -- "$debug_dir"
+  # Debug output is best-effort; warn but do not abort a real run on failure
+  mkdir -p -- "$debug_dir" || { warn "Cannot create debug directory ${debug_dir@Q}"; return 1; }
   filepath="$debug_dir/$filename"
 
-  printf '%s' "$prompt" > "$filepath"
+  printf '%s' "$prompt" > "$filepath" || { warn "Cannot write debug prompt to ${filepath@Q}"; return 1; }
   debug "Prompt saved to: $filepath"
 }
 
@@ -810,10 +814,10 @@ main() {
     fi
     debug "Collected ${#system_json} bytes of system data"
 
-    # Save debug prompt if in debug mode
+    # Save debug prompt if in debug mode (best-effort; never abort a real run)
     if ((DEBUG)); then
       prompt=$(build_prompt "$system_json")
-      save_debug_prompt "$prompt" "$host" "$LANGUAGE"
+      save_debug_prompt "$prompt" "$host" "$LANGUAGE" ||:
     fi
 
     # Call LLM API
