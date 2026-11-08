@@ -226,8 +226,10 @@ listening sockets with their owning process; socket summary; firewall (ufw,
 nftables or iptables) and fail2ban; failed units; units with errors in the
 last 24 hours and their state now; error-level journal entries (24 hours);
 SSH and sudo authentication (24 hours); recent logins; pending updates;
-chkrootkit's daily log against its baseline; crontabs and systemd timers;
-docker containers; then any `EXTRA_COMMANDS`.
+chkrootkit's daily log against its baseline and, when it changed, the files
+behind each changed warning from `log.today.raw` (with owner, mode and mtime;
+lines `/etc/chkrootkit/chkrootkit.ignore` hides are only counted); crontabs
+and systemd timers; docker containers; then any `EXTRA_COMMANDS`.
 
 ▲ This data goes to the model's provider. It includes host names, IP
 addresses, user names and log lines. Process command lines are not sent,

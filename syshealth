@@ -12,7 +12,7 @@
 # redeclare it, and a VERSION already in the environment must not skip it)
 [[ -v SYSHEALTH_METADATA ]] || {
   declare -r SYSHEALTH_METADATA=1
-  declare -r VERSION=3.1.0
+  declare -r VERSION=3.2.0
   declare -r SCRIPT_NAME=${BASH_SOURCE[0]##*/}
   # Claude API version; 2026-10-21 rejects temperature, top_p and top_k on every model
   declare -r ANTHROPIC_VERSION=2026-10-21
@@ -513,22 +513,120 @@ sh_auth() {
   grep -E 'sudo.*(incorrect password|authentication failure|NOT in sudoers)' <<< "$log" | tail -n 5
 }
 
-# chkrootkit's daily log, as changes against its accepted baseline when one exists
+# chkrootkit's daily log, as changes against its accepted baseline when one
+# exists; when today differs, also the files behind the warnings, which the
+# cron job's filtered log.today drops. DIR and IGNORE default to Debian's paths.
 sh_chkrootkit() {
-  local -- dir=/var/log/chkrootkit
+  local -- dir=${1:-/var/log/chkrootkit} ignore=${2:-/etc/chkrootkit/chkrootkit.ignore} new='' note='' lists
+  local -i baseline=0
   [[ -f $dir/log.today ]] || { echo "no chkrootkit log ($dir/log.today)"; return 0; }
+  # log.expected is optional: without one, ls names only log.today
   ls -l --time-style=long-iso -- "$dir"/log.today "$dir"/log.expected 2>/dev/null
   if [[ -f $dir/log.expected ]]; then
     if diff -q -- "$dir"/log.expected "$dir"/log.today >/dev/null; then
       echo 'log.today matches the accepted baseline log.expected: no change'
-    else
-      echo 'changes against the accepted baseline log.expected (< baseline, > today):'
-      diff -- "$dir"/log.expected "$dir"/log.today | grep '^[<>]' | head -n 40
+      return 0
     fi
+    baseline=1
+    echo 'changes against the accepted baseline log.expected (< baseline, > today):'
+    diff -- "$dir"/log.expected "$dir"/log.today | grep '^[<>]' | head -n 40
+    new=$(diff -- "$dir"/log.expected "$dir"/log.today | sed -n 's/^> //p')
+    note='; only blocks with new lines today, and only their new lines'
   else
     echo 'no log.expected baseline; suspicious lines in log.today:'
     grep -E -- 'INFECTED|Warning|suspicious|Possible|Vulnerable' "$dir"/log.today | head -n 40
   fi
+  [[ -f $dir/log.today.raw ]] || return 0
+  lists=$(sh_chkrootkit_lists "$dir"/log.today.raw "$ignore" "$baseline" "$new")
+  printf '\nfiles behind the warnings in log.today.raw (lines the ignore file %s hides are counted, not listed%s):\n' \
+    "$ignore" "$note"
+  printf '%s\n' "${lists:-(no warning block has new lines today)}"
+}
+
+# Split a raw chkrootkit log into its WARNING blocks: a block runs from a line
+# starting 'WARNING: ' to the next test ('Searching for …', 'Checking `…').
+# BASELINE and NEW (today's new lines) are passed on to sh_chkrootkit_block.
+sh_chkrootkit_lists() {
+  local -- raw=$1 ignore=$2 baseline=$3 new=$4 line header=''
+  local -a block=()
+  while IFS= read -r line; do
+    if [[ $line == 'WARNING: '* ]]; then
+      [[ -z $header ]] || sh_chkrootkit_block "$ignore" "$baseline" "$new" "$header" "${block[@]}"
+      header=$line block=()
+    elif [[ -n $header ]]; then
+      if [[ $line == 'Searching for '* || $line == 'Checking `'* ]]; then
+        sh_chkrootkit_block "$ignore" "$baseline" "$new" "$header" "${block[@]}"
+        header='' block=()
+      elif [[ -n $line ]]; then
+        block+=("$line")
+      fi
+    fi
+  done < "$raw"
+  [[ -z $header ]] || sh_chkrootkit_block "$ignore" "$baseline" "$new" "$header" "${block[@]}"
+}
+
+# One WARNING block: its size, the lines IGNORE hides grouped by their first two
+# path components, then up to 20 others, a file with its owner, mode and mtime.
+# Against a baseline (BASELINE 1) only lines in NEW are listed, the rest counted,
+# and a block with no new line, header included, prints nothing.
+sh_chkrootkit_block() {
+  local -- ignore=$1 new=$3 header=$4 line owner mode n_lines=lines n_unchanged=lines matches=''
+  local -i baseline=$2 count mtime shown=0 unchanged=0 i=0 rc=0
+  local -a hidden=() rest=() listed=()
+  local -A is_new=() is_hidden=()
+  shift 4
+  # one pass: grep -n numbers the lines the ignore file hides; exit 1 is "none",
+  # 2 or more an unusable pattern file, reported below and then nothing is hidden
+  if [[ -r $ignore && -s $ignore ]] && (($#)); then
+    matches=$(printf '%s\n' "$@" | grep -nE -f "$ignore") || rc=$?
+    if ((rc < 2)); then
+      while IFS=: read -r i line; do
+        ((i == 0)) || is_hidden[$i]=1
+      done <<< "$matches"
+    fi
+  fi
+  i=0
+  for line in "$@"; do
+    i+=1
+    if [[ ${is_hidden[$i]+x} ]]; then hidden+=("$line"); else rest+=("$line"); fi
+  done
+  if ((baseline)); then
+    while IFS= read -r line; do
+      [[ -z $line ]] || is_new[$line]=1
+    done <<< "$new"
+    for line in "${rest[@]}"; do
+      if [[ ${is_new[$line]+x} ]]; then listed+=("$line"); else unchanged+=1; fi
+    done
+    [[ ${is_new[$header]+x} ]] || ((${#listed[@]})) || return 0
+  else
+    listed=("${rest[@]}")
+  fi
+  (($# != 1)) || n_lines=line
+  printf '%s %d %s, %d hidden by the ignore file\n' "$header" "$#" "$n_lines" "${#hidden[@]}"
+  ((rc < 2)) || printf '  [the ignore file could not be applied (grep exit %d): nothing hidden]\n' "$rc"
+  if ((${#hidden[@]})); then
+    while read -r count line; do
+      if [[ $line == /* ]]; then
+        printf '  hidden: %d under %s\n' "$count" "$line"
+      else
+        printf '  hidden: %d like %s\n' "$count" "$line"
+      fi
+    done < <(printf '%s\n' "${hidden[@]}" | sed -E 's#^(/[^/]+/[^/]+)/.*#\1#' | sort | uniq -c | sort -rn | head -n 5)
+  fi
+  for line in "${listed[@]}"; do
+    shown+=1
+    if ((shown > 20)); then
+      printf '  [... %d more lines]\n' $((${#listed[@]} - 20))
+      break
+    fi
+    if [[ $line == /* && -e $line ]] && read -r owner mode mtime < <(stat -c '%U:%G %A %Y' -- "$line"); then
+      printf '  %s  [%s %s %(%F %R)T]\n' "$line" "$owner" "$mode" "$mtime"
+    else
+      printf '  %s\n' "$line"
+    fi
+  done
+  ((unchanged != 1)) || n_unchanged=line
+  ((unchanged == 0)) || printf '  [%d more %s unchanged since the baseline]\n' "$unchanged" "$n_unchanged"
 }
 
 sh_crontabs() {
@@ -600,8 +698,8 @@ sh_firewall() {
 sh_collect() {
   export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
   export LC_ALL=C.UTF-8 SH_ROOT=$PPID
-  declare -fx sh_mask sh_cpu_top sh_smart sh_error_units sh_auth sh_chkrootkit sh_crontabs \
-    sh_listening sh_firewall
+  declare -fx sh_mask sh_cpu_top sh_smart sh_error_units sh_auth sh_chkrootkit \
+    sh_chkrootkit_lists sh_chkrootkit_block sh_crontabs sh_listening sh_firewall
 
   sh_run collected_at 5 'collection time and remote user' 'date -Is; id'
   sh_run system 15 'hostnamectl, uptime, CPU count' \
@@ -686,7 +784,8 @@ build_collector() {
   local -- nonce=$1 cmd
   local -i i=0
   declare -f sh_section sh_run sh_mask sh_cpu_top sh_smart sh_error_units \
-    sh_auth sh_chkrootkit sh_crontabs sh_listening sh_firewall sh_collect
+    sh_auth sh_chkrootkit sh_chkrootkit_lists sh_chkrootkit_block sh_crontabs sh_listening \
+    sh_firewall sh_collect
   printf 'SH_NONCE=%s\nsh_collect\n' "$nonce"
   for cmd in "${EXTRA_COMMANDS[@]}"; do
     i+=1

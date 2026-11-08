@@ -428,6 +428,81 @@ SS
   [[ ${lines[4]} == 'udp   UNCONN  0/0           127.0.0.1:323' ]]
 }
 
+# A chkrootkit log directory as the Debian cron job leaves it: today's warning
+# is new against the baseline, and the raw log holds the files behind it. The
+# filtered log.today keeps the lines the ignore file does not hide: $W/known
+# was there yesterday too, $W/stray is new; the ifpromisc block is unchanged.
+chkrootkit_fixture() {
+  local -- d=$W/ck
+  mkdir -p "$d"
+  : > "$W"/stray; : > "$W"/known; chmod 0755 "$W"/stray "$W"/known
+  printf '%s\n' 'Searching for Linux.Xor.DDoS...      not found' "$W"/known \
+    'WARNING: Output from ifpromisc:' 'lo: not promisc and no packet sniffer sockets' > "$d"/log.expected
+  printf '%s\n' 'Searching for Linux.Xor.DDoS...      WARNING' 'WARNING: Possible Linux.Xor.DDoS installed:' \
+    "$W"/known "$W"/stray \
+    'WARNING: Output from ifpromisc:' 'lo: not promisc and no packet sniffer sockets' > "$d"/log.today
+  {
+    printf 'Searching for Linux.Xor.DDoS...      WARNING\n\nWARNING: Possible Linux.Xor.DDoS installed:\n'
+    printf '/tmp/claude-1000/s%d/tool\n' 1 2 3
+    printf '%s\n' "$W"/known "$W"/stray
+    printf 'Searching for Linux.Proxy.1.0...     not found\n'
+    printf 'WARNING: Output from ifpromisc:\nlo: not promisc and no packet sniffer sockets\n'
+    printf "Checking \`w55808'...                 not found\n"
+  } > "$d"/log.today.raw
+  printf '^/tmp/claude-[0-9]+/\n^$\n' > "$d"/ignore
+}
+
+@test "sh_chkrootkit lists the files behind a new warning, counting what the ignore file hides" {
+  chkrootkit_fixture
+  run sh_chkrootkit "$W"/ck "$W"/ck/ignore
+  [[ $status -eq 0 ]]
+  [[ $output == *'> WARNING: Possible Linux.Xor.DDoS installed:'* ]]
+  [[ $output == *$'\nWARNING: Possible Linux.Xor.DDoS installed: 5 lines, 3 hidden by the ignore file\n'* ]]
+  [[ $output == *$'\n  hidden: 3 under /tmp/claude-1000\n'* ]]
+  # a new file comes with owner, mode and mtime (a quoted =~ pattern is literal, hence the variable)
+  local -- re="  $W/stray  \\[[^]]+ -rwxr-xr-x [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\\]"
+  [[ $output =~ $re ]]
+  refute grep -q 'claude-1000/s1' <<< "$output"
+}
+
+@test "sh_chkrootkit counts a warning's unchanged lines and skips blocks today did not change" {
+  chkrootkit_fixture
+  run sh_chkrootkit "$W"/ck "$W"/ck/ignore
+  [[ $status -eq 0 ]]
+  [[ $output == *$'\n  [1 more line unchanged since the baseline]'* ]]
+  refute grep -qF -- "  $W/known" <<< "$output"
+  refute grep -q 'Output from ifpromisc: ' <<< "$output"
+}
+
+@test "sh_chkrootkit with no baseline lists every warning block in full" {
+  chkrootkit_fixture
+  rm -- "$W"/ck/log.expected
+  run sh_chkrootkit "$W"/ck "$W"/ck/ignore
+  [[ $status -eq 0 ]]
+  [[ $output == *"  $W/known  ["* && $output == *"  $W/stray  ["* ]]
+  [[ $output == *$'\nWARNING: Output from ifpromisc: 1 line, 0 hidden by the ignore file\n'* ]]
+}
+
+@test "sh_chkrootkit says so when the ignore file cannot be applied, and hides nothing" {
+  chkrootkit_fixture
+  printf '(\n' > "$W"/ck/ignore             # not a valid ERE: grep exits 2
+  rm -- "$W"/ck/log.expected
+  run sh_chkrootkit "$W"/ck "$W"/ck/ignore
+  [[ $status -eq 0 ]]
+  [[ $output == *$'\nWARNING: Possible Linux.Xor.DDoS installed: 5 lines, 0 hidden by the ignore file\n'* ]]
+  [[ $output == *'  [the ignore file could not be applied (grep exit 2): nothing hidden]'* ]]
+  [[ $output == *'/tmp/claude-1000/s1/tool'* && $output == *"  $W/stray  ["* ]]
+}
+
+@test "sh_chkrootkit adds no file lists when today matches the baseline" {
+  chkrootkit_fixture
+  cp -- "$W"/ck/log.today "$W"/ck/log.expected
+  run sh_chkrootkit "$W"/ck "$W"/ck/ignore
+  [[ $status -eq 0 ]]
+  [[ $output == *'matches the accepted baseline'* ]]
+  refute grep -q 'hidden by the ignore file' <<< "$output"
+}
+
 @test "format_sections fails when the end marker is missing" {
   printf '\n@@abc@@ one|x\ndata\n' > "$W"/raw.txt
   run format_sections abc "$W"/raw.txt
