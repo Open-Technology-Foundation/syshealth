@@ -12,7 +12,7 @@
 # redeclare it, and a VERSION already in the environment must not skip it)
 [[ -v SYSHEALTH_METADATA ]] || {
   declare -r SYSHEALTH_METADATA=1
-  declare -r VERSION=3.0.0
+  declare -r VERSION=3.1.0
   declare -r SCRIPT_NAME=${BASH_SOURCE[0]##*/}
   # Claude API version; 2026-10-21 rejects temperature, top_p and top_k on every model
   declare -r ANTHROPIC_VERSION=2026-10-21
@@ -30,7 +30,7 @@
 # Precedence: built-in defaults < config files < environment < command line.
 # Numbers stay strings until validate_settings() has checked them, so a bad
 # value in a config file is reported, not evaluated as arithmetic.
-declare -- MODEL=claude-opus-5-5
+declare -- MODEL=claude-sonnet-5-5
 declare -- MAX_TOKENS=0              # 0 = provider default, see resolve_provider()
 declare -- TEMPERATURE=0.1           # OpenAI-compatible providers only
 declare -- EFFORT=''                 # Claude output_config.effort; '' = model default
@@ -154,7 +154,7 @@ off at the output limit; 2 Bash older than 5.2; 18 missing dependency;
 Examples:
   $SCRIPT_NAME -v                              # this host
   $SCRIPT_NAME -L id --mail ops@example.com srv1 srv2
-  $SCRIPT_NAME -m claude-sonnet-5-5 -e high srv1
+  $SCRIPT_NAME -m claude-opus-5-5 -e high srv1
   $SCRIPT_NAME -n srv1 | less                  # see what would be sent
 HELP
 }

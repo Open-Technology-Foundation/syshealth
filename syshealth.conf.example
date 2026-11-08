@@ -18,7 +18,7 @@
 # --- Model ------------------------------------------------------------------
 # The provider follows from the name: claude-*, gpt-*/o*, gemini-*, deepseek-*,
 # grok-*, anything else is an Ollama model.
-#MODEL=claude-opus-5-5
+#MODEL=claude-sonnet-5-5
 
 # Output limit; 0 = provider default (Claude 32000, OpenAI 16384, others 8192).
 # On Claude, thinking counts against it.

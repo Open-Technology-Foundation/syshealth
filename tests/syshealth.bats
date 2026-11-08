@@ -196,7 +196,7 @@ EOF
   run load_config
   [[ $output == *Ignoring* ]]
   load_config 2>/dev/null
-  [[ $MODEL == claude-opus-5-5 ]]
+  [[ $MODEL == claude-sonnet-5-5 ]]
 }
 
 @test "load_config skips an unreadable config file instead of dying" {
@@ -531,12 +531,12 @@ sys.stdout.write(next(p for p in m.walk() if p.get_filename()).get_content())
   local -- req=$STUB_DIR/request
   jq -e '.path == "/v1/messages" and ."anthropic-version" == "2026-10-21"' "$req"
   jq -e '."anthropic-beta" == "server-side-fallback-2026-07-01" and .key_ok' "$req"
-  jq -e '.body.model == "claude-opus-5-5" and .body.max_tokens == 32000' "$req"
+  jq -e '.body.model == "claude-sonnet-5-5" and .body.max_tokens == 32000' "$req"
   jq -e '.body | has("temperature") | not' "$req"
   jq -e '.body.messages[0].content | contains("----- BEGIN SYSTEM DATA ")' "$req"
   local -a reports=("$W"/out/localhost-en-*.md)
   [[ ${#reports[@]} -eq 1 && -f ${reports[0]} ]]
-  [[ $(<"${reports[0]}") == *'stub answer'*"_syshealth $VERSION · claude-opus-5-5 · collected "*' · 1234 in, 56 out tokens_' ]]
+  [[ $(<"${reports[0]}") == *'stub answer'*"_syshealth $VERSION · claude-sonnet-5-5 · collected "*' · 1234 in, 56 out tokens_' ]]
 }
 
 @test "end to end: a report cut off at max_tokens is kept, flagged and exits 1" {

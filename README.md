@@ -77,7 +77,7 @@ With no host, this host is analysed. A host is an SSH destination
 
 | Option | Meaning |
 |--------|---------|
-| `-m, --model MODEL` | Model; the provider follows from its name (default `claude-opus-5-5`) |
+| `-m, --model MODEL` | Model; the provider follows from its name (default `claude-sonnet-5-5`) |
 | `-e, --effort LEVEL` | Claude effort: `low`, `medium`, `high`, `xhigh`, `max` (default: the model's own) |
 | `-L, --language LANG` | Report language, a name or a code such as `id` or `de` (default `en`) |
 | `-o, --output-dir DIR` | Where reports go (default `~/syshealth`) |
@@ -96,7 +96,7 @@ Short options can be bundled (`-qn`).
 ```bash
 syshealth -v                                   # this host
 syshealth -q -o /var/reports srv1 srv2         # two hosts, for cron
-syshealth -m claude-sonnet-5-5 -e high srv1    # another Claude model, more effort
+syshealth -m claude-opus-5-5 -e high srv1      # a larger Claude model, more effort
 syshealth -m gpt-5.2 srv1                      # OpenAI
 syshealth -m qwen3 srv1                        # a local Ollama model, no key
 syshealth -D srv1                              # keep everything for debugging
@@ -130,7 +130,7 @@ unsafe or unreadable file is skipped with a warning. Use plain assignments
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `MODEL` | `claude-opus-5-5` | model, and so the provider |
+| `MODEL` | `claude-sonnet-5-5` | model, and so the provider |
 | `MAX_TOKENS` | `0` | output limit; 0 means 32000 for Claude, 16384 for OpenAI, 8192 for the others |
 | `EFFORT` | empty | Claude effort; empty leaves the model's default |
 | `TEMPERATURE` | `0.1` | sent to OpenAI-compatible providers only (see below) |
