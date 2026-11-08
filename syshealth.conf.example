@@ -1,44 +1,62 @@
-# /etc/syshealth/syshealth.conf - System-wide defaults for syshealth
-# Uncomment and modify values as needed.
-# Precedence: CLI flags > environment variables > this file > built-in defaults
+# /etc/syshealth/syshealth.conf, or ~/.config/syshealth/syshealth.conf
+#
+# Sourced as Bash: plain assignments only (no 'declare'). Used only when owned
+# by root or the user running syshealth and not writable by group or others;
+# a file holding API keys should be mode 0600 or 0640.
+# Precedence: built-in defaults < this file < environment < command line.
 
-# --- API Keys ---
-# Set keys here instead of (or in addition to) env vars or key files.
-# Env vars (e.g. ANTHROPIC_API_KEY) always take precedence over this file.
-
+# --- API keys ---------------------------------------------------------------
+# A key set in the environment wins over one set here.
 #ANTHROPIC_API_KEY=sk-ant-...
 #OPENAI_API_KEY=sk-...
 #GEMINI_API_KEY=...
 #DEEPSEEK_API_KEY=sk-...
 #XAI_API_KEY=xai-...
+#ANTHROPIC_BASE_URL=https://api.anthropic.com
 #OLLAMA_HOST=http://localhost:11434
 
-# --- General Settings ---
+# --- Model ------------------------------------------------------------------
+# The provider follows from the name: claude-*, gpt-*/o*, gemini-*, deepseek-*,
+# grok-*, anything else is an Ollama model.
+#MODEL=claude-opus-5-5
 
-# AI model for analysis (provider auto-detected from model name)
-#MODEL=claude-sonnet-4-5
+# Output limit; 0 = provider default (Claude 32000, OpenAI 16384, others 8192).
+# On Claude, thinking counts against it.
+#MAX_TOKENS=0
 
-# Maximum response tokens (default 8192; raise for very detailed Claude reports)
-#MAX_TOKENS=8192
+# Claude effort: low, medium, high, xhigh or max; empty = the model's default.
+#EFFORT=
 
-# Response temperature (0.0-1.0)
+# OpenAI-compatible providers only; never sent to Claude.
 #TEMPERATURE=0.1
 
-# API timeout in seconds
-#API_TIMEOUT=420
+# Seconds for the API call, and for collecting one host.
+#API_TIMEOUT=900
+#COLLECT_TIMEOUT=600
 
-# Default output directory for reports
+# --- Reports ----------------------------------------------------------------
 #OUTPUT_DIR=/root/syshealth
-
-# Default report language
 #LANGUAGE=en
+#MAIL_RECIPIENTS=ops@example.com,admin@example.com
+#MAIL_FROM='SysHealth <syshealth@example.com>'
 
-# Comma-separated email recipients
-#MAIL_RECIPIENTS=
+# Operator notes: CONTEXT_DIR/common.md and CONTEXT_DIR/<host>.md
+#CONTEXT_DIR=/etc/syshealth/hosts
 
-# --- Alert Thresholds ---
+# Extra commands run on every host, each its own section (120 s limit).
+#EXTRA_COMMANDS=(
+#  'systemctl status --no-pager myapp'
+#  'cat /etc/myapp/schedule.conf'
+#)
+
+# --- Thresholds given to the model ------------------------------------------
 #DISK_WARN=80
 #DISK_CRIT=90
 #MEM_WARN=85
 #MEM_CRIT=95
-#CPU_WARN=2.0
+# Sustained load average per CPU core (replaces 2.x's CPU_WARN)
+#LOAD_WARN=1.0
+
+# --- Size of the collected data ---------------------------------------------
+#MAX_SECTION_LINES=200
+#MAX_LINE_CHARS=500
