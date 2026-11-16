@@ -632,4 +632,95 @@ sys.stdout.write(next(p for p in m.walk() if p.get_filename()).get_content())
   [[ $status -eq 1 && $output == *'refusal category: cyber'* ]]
 }
 
+
+# 'ufw status verbose' with a few allow rules, two of them from Anywhere, and
+# a blocklist: the block rules must be counted, not listed
+ufw_fixture() {
+  printf '%s\n' 'Status: active' 'Logging: on (low)' \
+    'Default: deny (incoming), allow (outgoing), deny (routed)' 'New profiles: skip' '' \
+    'To                         Action      From' '--                         ------      ----' \
+    '22/tcp                     ALLOW IN    Anywhere' \
+    '80,443/tcp                 ALLOW IN    Anywhere                   # web' \
+    '3306                       ALLOW IN    192.0.2.10                 # office' \
+    '3306                       ALLOW IN    192.0.2.11                 # office' \
+    '3306                       ALLOW IN    198.51.100.7' \
+    '8080/tcp                   DENY IN     Anywhere' \
+    'Anywhere on wg0            ALLOW IN    10.0.0.0/24                # tunnel'
+  local -i i
+  for ((i = 1; i <= 300; i++)); do
+    printf 'Anywhere                   DENY IN     203.0.113.%d\n' "$((i % 250))"
+  done
+  for ((i = 1; i <= 4; i++)); do
+    printf '22/tcp                     REJECT IN   198.51.100.%d             # by Fail2Ban after 3 attempts against sshd\n' "$i"
+  done
+}
+
+@test "sh_ufw_summary lists the open rules in full, groups the others and counts the blocklist" {
+  run sh_ufw_summary < <(ufw_fixture)
+  [[ $status -eq 0 ]]
+  [[ ${lines[0]} == 'ufw Status: active' ]]
+  [[ $output == *$'\nufw rules: 311 (6 ALLOW IN, 301 DENY IN, 4 REJECT IN)\n'* ]]
+  [[ $output == *$'\n  22/tcp                         ALLOW IN  Anywhere\n'* ]]
+  [[ $output == *$'\n  80,443/tcp                     ALLOW IN  Anywhere  # web\n'* ]]
+  [[ $output == *$'\n  3306 ALLOW IN from 3: [office] 192.0.2.10, 192.0.2.11; 198.51.100.7\n'* ]]
+  [[ $output == *$'\n  Anywhere on wg0 ALLOW IN from 1: [tunnel] 10.0.0.0/24\n'* ]]
+  [[ $output == *$'blocked from Anywhere (every such rule):\n  8080/tcp                       DENY IN   Anywhere\n'* ]]
+  [[ $output == *$'\n  Anywhere DENY IN: 300 sources; (no comment) 300\n'* ]]
+  [[ ${lines[-1]} == '  22/tcp REJECT IN: 4 sources; by Fail2Ban after 3 attempts against sshd 4' ]]
+  refute grep -q '203.0.113.7$' <<< "$output"
+  ((${#lines[@]} < 30))
+}
+
+@test "sh_firewall summarises an active ufw and gives each fail2ban jail's bans" {
+  ufw() { ufw_fixture; }
+  fail2ban-client() {
+    if (($# == 1)); then
+      printf 'Status\n|- Number of jail:\t2\n`- Jail list:\tsshd, recidive\n'
+    else
+      printf 'Status for the jail: %s\n|  |- Currently failed:\t1\n|  |- Total failed:\t9\n' "$2"
+      printf '   |- Currently banned:\t4\n   |- Total banned:\t7\n'
+    fi
+  }
+  run sh_firewall
+  [[ $status -eq 0 ]]
+  [[ ${lines[0]} == 'ufw Status: active' ]]
+  [[ $output == *$'\n  Anywhere DENY IN: 300 sources; (no comment) 300\n'* ]]
+  [[ $output == *$'\nsshd: banned now 4 (total 7), failing now 1 (total 9)\nrecidive: banned now 4 (total 7), failing now 1 (total 9)'* ]]
+  refute grep -q 'nftables' <<< "$output"
+}
+
+@test "sh_firewall says which firewall tools are not installed" {
+  mkdir -p -- "$W"/empty
+  PATH=$W/empty run sh_firewall
+  [[ $status -eq 0 ]]
+  [[ $output == $'ufw: not installed\nnftables: not installed\niptables: not installed\nfail2ban: not installed' ]]
+}
+
+@test "sh_chkrootkit tells a host without chkrootkit from one with no log yet" {
+  mkdir -p -- "$W"/empty
+  PATH=$W/empty run sh_chkrootkit "$W"/nolog
+  [[ $output == 'chkrootkit is not installed: this host has no rootkit check' ]]
+  chkrootkit() { :; }
+  run sh_chkrootkit "$W"/nolog
+  [[ $output == "chkrootkit is installed, but there is no daily log yet ($W/nolog/log.today)" ]]
+}
+
+@test "host_commands reads the host's commands file, skipping comments, and refuses an unsafe one" {
+  CONTEXT_DIR=$SYSHEALTH_CONTEXT_DIR
+  mkdir -p -- "$CONTEXT_DIR"
+  printf '# backup results\n\n  tail -n 3 /var/log/backup.log\nuptime\n' > "$CONTEXT_DIR"/srv1.commands
+  printf 'echo fqdn\n' > "$CONTEXT_DIR"/srv1.example.com.commands
+  chmod 644 "$CONTEXT_DIR"/*.commands
+  run host_commands root@srv1.example.com
+  [[ $output == $'echo fqdn\ntail -n 3 /var/log/backup.log\nuptime' ]]
+  run host_commands other
+  [[ -z $output ]]
+  run build_collector deadbeef srv1
+  [[ $output == *"sh_run host_1 120 "*"sh_run host_2 120 "* ]]
+  [[ ${lines[-1]} == 'sh_section __end__' ]]
+  chmod 666 "$CONTEXT_DIR"/srv1.commands
+  run host_commands srv1
+  [[ $output == *'Ignoring'*'srv1.commands'* && $output != *uptime* ]]
+}
+
 #fin

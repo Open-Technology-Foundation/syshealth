@@ -12,7 +12,7 @@
 # redeclare it, and a VERSION already in the environment must not skip it)
 [[ -v SYSHEALTH_METADATA ]] || {
   declare -r SYSHEALTH_METADATA=1
-  declare -r VERSION=3.2.0
+  declare -r VERSION=3.3.0
   declare -r SCRIPT_NAME=${BASH_SOURCE[0]##*/}
   # Claude API version; 2026-10-21 rejects temperature, top_p and top_k on every model
   declare -r ANTHROPIC_VERSION=2026-10-21
@@ -135,6 +135,9 @@ Files:
   CONTEXT_DIR/common.md, CONTEXT_DIR/HOST.md  (CONTEXT_DIR: $CONTEXT_DIR)
       Operator notes on a host: its role, intentional setups, known false
       positives. The model treats them as trusted context.
+  CONTEXT_DIR/HOST.commands
+      Commands run on that host only, one per line, each its own section.
+      Ignored unless owned by root or you and not group- or world-writable.
 
 Environment (wins over the config files; options win over both):
   ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY,
@@ -519,7 +522,14 @@ sh_auth() {
 sh_chkrootkit() {
   local -- dir=${1:-/var/log/chkrootkit} ignore=${2:-/etc/chkrootkit/chkrootkit.ignore} new='' note='' lists
   local -i baseline=0
-  [[ -f $dir/log.today ]] || { echo "no chkrootkit log ($dir/log.today)"; return 0; }
+  if [[ ! -f $dir/log.today ]]; then
+    if command -v chkrootkit >/dev/null; then
+      echo "chkrootkit is installed, but there is no daily log yet ($dir/log.today)"
+    else
+      echo 'chkrootkit is not installed: this host has no rootkit check'
+    fi
+    return 0
+  fi
   # log.expected is optional: without one, ls names only log.today
   ls -l --time-style=long-iso -- "$dir"/log.today "$dir"/log.expected 2>/dev/null
   if [[ -f $dir/log.expected ]]; then
@@ -678,20 +688,151 @@ sh_listening() {
     }'
 }
 
+# The firewall in a form that fits a section: ufw summarised (a blocklist or
+# fail2ban can add thousands of rules, which would push the allow rules out),
+# otherwise the nftables ruleset or iptables. Each tool says whether it is
+# there, so a missing firewall reads as a fact, not as a gap in the data.
 sh_firewall() {
-  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw status verbose
-  elif command -v nft >/dev/null && [[ -n $(nft list ruleset 2>/dev/null) ]]; then
-    nft list ruleset
-  elif command -v iptables >/dev/null; then
-    iptables -S 2>&1
+  local -- status='' rules='' jails jail
+  local -a jail_list=()
+  if ! command -v ufw >/dev/null; then
+    echo 'ufw: not installed'
   else
-    echo 'no ufw, nft or iptables found'
+    status=$(ufw status verbose 2>&1)
+    if [[ $status == 'Status: active'* ]]; then
+      sh_ufw_summary <<< "$status"
+    else
+      echo "ufw: installed, ${status%%$'\n'*}"
+    fi
   fi
-  if command -v fail2ban-client >/dev/null; then
-    echo '--- fail2ban'
-    fail2ban-client status 2>&1
+  if [[ $status != 'Status: active'* ]]; then
+    if ! command -v nft >/dev/null; then
+      echo 'nftables: not installed'
+    else
+      rules=$(nft list ruleset 2>&1)
+      if [[ -n $rules ]]; then
+        printf -- '--- nftables ruleset\n%s\n' "$rules"
+      else
+        echo 'nftables: empty ruleset'
+      fi
+    fi
+    if [[ -z $rules ]]; then
+      if command -v iptables >/dev/null; then
+        echo '--- iptables -S'
+        iptables -S 2>&1
+      else
+        echo 'iptables: not installed'
+      fi
+    fi
   fi
+  if ! command -v fail2ban-client >/dev/null; then
+    echo 'fail2ban: not installed'
+    return 0
+  fi
+  jails=$(fail2ban-client status 2>&1 | sed -n 's/.*Jail list:[[:space:]]*//p' | tr -d ' ' | tr ',' ' ')
+  if [[ -z $jails ]]; then
+    echo "fail2ban: $(fail2ban-client status 2>&1 | head -n 1)"
+    return 0
+  fi
+  echo '--- fail2ban jails'
+  read -ra jail_list <<< "$jails"
+  for jail in "${jail_list[@]}"; do
+    fail2ban-client status "$jail" 2>&1 | awk -v jail="$jail" -F ':[[:space:]]*' '
+      /Currently failed/ { cf = $2 }  /Total failed/ { tf = $2 }
+      /Currently banned/ { cb = $2 }  /Total banned/ { tb = $2 }
+      END { printf "%s: banned now %s (total %s), failing now %s (total %s)\n", jail, cb, tb, cf, tf }'
+  done
+}
+
+# 'ufw status verbose' on stdin, summarised: the header; every allow rule open
+# to Anywhere, in full; other allow rules grouped by port with their sources;
+# block rules from Anywhere in full; other block rules counted by port with
+# their commonest comments. Plain awk (mawk on Debian and Ubuntu).
+sh_ufw_summary() {
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function short(s) { return length(s) > 60 ? substr(s, 1, 57) "..." : s }
+    /^(Status|Logging|Default):/ { print "ufw " $0; next }
+    !started { if ($1 == "--") started = 1; next }
+    $0 == "" { next }
+    {
+      if (!match($0, / (ALLOW|DENY|REJECT|LIMIT)( (IN|OUT|FWD))? /)) { odd[++nodd] = $0; next }
+      to = trim(substr($0, 1, RSTART - 1))
+      action = trim(substr($0, RSTART, RLENGTH))
+      rest = substr($0, RSTART + RLENGTH)
+      comment = ""
+      c = index(rest, "# ")
+      if (c) { comment = trim(substr(rest, c + 2)); rest = substr(rest, 1, c - 1) }
+      from = trim(rest)
+      total++
+      if (!(action in nact)) aorder[++na] = action
+      nact[action]++
+      if (action ~ /^(ALLOW|LIMIT)/) {
+        if (from ~ /^Anywhere/) {
+          open[++nopen] = sprintf("  %-30s %-9s %s%s", to, action, from, comment == "" ? "" : "  # " comment)
+          next
+        }
+        # sources grouped by comment: a list of office addresses usually shares one
+        key = to " " action
+        if (!(key in nsrc)) korder[++nk] = key
+        if (++nsrc[key] > 20) next
+        ak = key SUBSEP comment
+        if (ak in src) src[ak] = src[ak] ", " from
+        else { aname[key, ++nac[key]] = comment; src[ak] = from }
+        next
+      }
+      if (from ~ /^Anywhere/) {
+        closed[++nclosed] = sprintf("  %-30s %-9s %s%s", to, action, from, comment == "" ? "" : "  # " comment)
+        next
+      }
+      key = to " " action
+      if (!(key in nblk)) border[++nb] = key
+      nblk[key]++
+      comment = comment == "" ? "(no comment)" : short(comment)
+      ck = key SUBSEP comment
+      if (!(ck in ccount)) cname[key, ++ncom[key]] = comment
+      ccount[ck]++
+    }
+    END {
+      line = ""
+      for (i = 1; i <= na; i++) line = line (i > 1 ? ", " : "") nact[aorder[i]] " " aorder[i]
+      printf "ufw rules: %d (%s)\n", total, line
+      printf "allowed from Anywhere (every such rule):\n"
+      if (!nopen) print "  none"
+      for (i = 1; i <= nopen; i++) print open[i]
+      printf "allowed from specific sources, by port (at most 20 sources shown):\n"
+      if (!nk) print "  none"
+      for (i = 1; i <= nk; i++) {
+        k = korder[i]; line = ""
+        for (j = 1; j <= nac[k]; j++) {
+          c = aname[k, j]
+          line = line (j > 1 ? "; " : "") (c == "" ? "" : "[" short(c) "] ") src[k, c]
+        }
+        printf "  %s from %d: %s%s\n", k, nsrc[k], line, (nsrc[k] > 20 ? "; ..." : "")
+      }
+      printf "blocked from Anywhere (every such rule):\n"
+      if (!nclosed) print "  none"
+      for (i = 1; i <= nclosed; i++) print closed[i]
+      printf "blocked sources, counted by port (commonest comments):\n"
+      if (!nb) print "  none"
+      for (i = 1; i <= nb; i++) {
+        k = border[i]; line = ""
+        # the three commonest comments, by selection (no sort in plain awk)
+        split("", used)
+        for (t = 1; t <= 3 && t <= ncom[k]; t++) {
+          best = 0
+          for (j = 1; j <= ncom[k]; j++)
+            if (!(j in used) && (best == 0 || ccount[k, cname[k, j]] > ccount[k, cname[k, best]])) best = j
+          used[best] = 1
+          line = line (t > 1 ? "; " : "") cname[k, best] " " ccount[k, cname[k, best]]
+        }
+        printf "  %s: %d sources; %s%s\n", k, nblk[k], line, (ncom[k] > 3 ? "; ..." : "")
+      }
+      if (nodd) {
+        printf "lines not parsed (%d, first 10):\n", nodd
+        for (i = 1; i <= nodd && i <= 10; i++) print "  " odd[i]
+      }
+    }'
 }
 
 #shellcheck disable=SC2016  # the commands are single-quoted: bash -c runs them on the host
@@ -699,7 +840,7 @@ sh_collect() {
   export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
   export LC_ALL=C.UTF-8 SH_ROOT=$PPID
   declare -fx sh_mask sh_cpu_top sh_smart sh_error_units sh_auth sh_chkrootkit \
-    sh_chkrootkit_lists sh_chkrootkit_block sh_crontabs sh_listening sh_firewall
+    sh_chkrootkit_lists sh_chkrootkit_block sh_crontabs sh_listening sh_firewall sh_ufw_summary
 
   sh_run collected_at 5 'collection time and remote user' 'date -Is; id'
   sh_run system 15 'hostnamectl, uptime, CPU count' \
@@ -757,7 +898,7 @@ sh_collect() {
   sh_run interfaces 10 'ip -br addr, default route' 'ip -br addr; ip route show default'
   sh_run listening 15 'listening sockets: queue, address and owning processes' sh_listening
   sh_run connections 10 'socket summary' 'ss -s'
-  sh_run firewall 30 'ufw, nftables or iptables; fail2ban' sh_firewall
+  sh_run firewall 60 'ufw summarised, or nftables or iptables; fail2ban jails' sh_firewall
 
   sh_run failed_units 15 'failed systemd units' 'systemctl --failed --no-legend --no-pager'
   sh_run error_units 60 'units with err-level journal entries in the last 24 h, and their state now' sh_error_units
@@ -778,19 +919,24 @@ sh_collect() {
      docker ps -a --format "{{.Names}}\t{{.Status}}\t{{.Image}}"'
 }
 
-# The script sent to the host: the collector functions, the calls, then
-# EXTRA_COMMANDS from the config, then the end marker
+# The script sent to HOST: the collector functions, the calls, then
+# EXTRA_COMMANDS from the config and the host's own commands, then the end marker
 build_collector() {
-  local -- nonce=$1 cmd
+  local -- nonce=$1 host=${2:-} cmd
   local -i i=0
   declare -f sh_section sh_run sh_mask sh_cpu_top sh_smart sh_error_units \
     sh_auth sh_chkrootkit sh_chkrootkit_lists sh_chkrootkit_block sh_crontabs sh_listening \
-    sh_firewall sh_collect
+    sh_firewall sh_ufw_summary sh_collect
   printf 'SH_NONCE=%s\nsh_collect\n' "$nonce"
   for cmd in "${EXTRA_COMMANDS[@]}"; do
     i+=1
     printf 'sh_run extra_%d 120 %q %q\n' "$i" "extra command: $cmd" "$cmd"
   done
+  i=0
+  while IFS= read -r cmd; do
+    i+=1
+    printf 'sh_run host_%d 120 %q %q\n' "$i" "host command: $cmd" "$cmd"
+  done < <(host_commands "$host")
   printf 'sh_section __end__\n'
 }
 
@@ -862,6 +1008,29 @@ host_context() {
   done
 }
 
+# Commands for HOST alone: CONTEXT_DIR/HOST.commands (and the short name's
+# file when HOST is a FQDN), one per line; blank lines and # comments are
+# skipped. They run as the SSH user on the host, so a file that anyone but
+# root or you could have written is ignored, as a config file would be.
+host_commands() {
+  local -- name=${1##*@} file line
+  local -a files=()
+  [[ -n $name ]] || return 0
+  files=("$CONTEXT_DIR/$(sanitize_filename "$name")".commands)
+  [[ ${name%%.*} == "$name" ]] || files+=("$CONTEXT_DIR/$(sanitize_filename "${name%%.*}")".commands)
+  for file in "${files[@]}"; do
+    [[ -f $file ]] || continue
+    if [[ ! -r $file ]] || ! conf_is_safe "$file"; then
+      warn "Ignoring ${file@Q}: it must be readable, owned by root or you and not writable by group or others"
+      continue
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+      line=${line#"${line%%[![:space:]]*}"}
+      [[ -z $line || $line == '#'* ]] || printf '%s\n' "$line"
+    done < "$file"
+  done
+}
+
 # Prompt text
 
 build_system_prompt() {
@@ -903,6 +1072,12 @@ How to judge
 - Network exposure: listening sockets name their owning process. A host with
   only private (RFC 1918) addresses is not directly reachable from the
   internet; judge exposure together with the firewall section.
+- The firewall section summarises ufw: every rule open to Anywhere in full,
+  other allow rules grouped by port with their sources, block rules counted.
+  It also says when ufw, nftables or fail2ban is not installed: that is a
+  fact about the host, not a gap in the data.
+- Sections named extra_N or host_N run commands the operators chose for
+  every host or for this one; judge their output like any other data.
 - A filesystem marked noauto in fstab and not mounted is intentional (an
   offline or removable disk, for example), not a failed mount.
 - Before saying how often a job runs (a reboot, a backup), read its schedule
@@ -1191,7 +1366,7 @@ analyse_host() {
   nonce=$(new_nonce)
 
   info "Collecting from $host"
-  run_collector "$host" "$(build_collector "$nonce")" "$work"/raw.txt "$work"/collect.err || rc=$?
+  run_collector "$host" "$(build_collector "$nonce" "$host")" "$work"/raw.txt "$work"/collect.err || rc=$?
   case $rc in
     0)       ;;
     124|137) error "$host: collection timed out after ${COLLECT_TIMEOUT}s"; return 1 ;;

@@ -44,6 +44,7 @@
 #CONTEXT_DIR=/etc/syshealth/hosts
 
 # Extra commands run on every host, each its own section (120 s limit).
+# Commands for one host: CONTEXT_DIR/<host>.commands, one per line.
 #EXTRA_COMMANDS=(
 #  'systemctl status --no-pager myapp'
 #  'cat /etc/myapp/schedule.conf'

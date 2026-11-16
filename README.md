@@ -202,16 +202,28 @@ in fstab and normally not mounted. The chkrootkit "suspicious file" line
 for /usr/lib/debug/.build-id is a known false positive.
 ```
 
-### Extra commands: `EXTRA_COMMANDS`
+### Extra commands: `EXTRA_COMMANDS` and `CONTEXT_DIR/HOST.commands`
 
-Each entry runs on every host with `bash -c` and becomes its own section,
-with a 120-second limit:
+Each entry runs on every host with `bash -c` and becomes its own section
+(`extra_N`), with a 120-second limit:
 
 ```bash
 EXTRA_COMMANDS=(
   'systemctl status --no-pager myapp'
   'cat /etc/myapp/schedule.conf'
 )
+```
+
+Commands for one host go in `CONTEXT_DIR/HOST.commands` (for
+`root@srv1.example.com`, both `srv1.example.com.commands` and
+`srv1.commands` are read), one per line; blank lines and `#` comments are
+skipped. Each becomes a section `host_N`. Like a config file, the file is
+ignored unless owned by root or you and not group- or world-writable. For
+example, a backup server can show its jobs' last results:
+
+```bash
+# srv1.commands
+grep -h '^=== ' /var/log/mybackup/*.log | tail -n 12
 ```
 
 ## What is collected
@@ -222,14 +234,17 @@ sync; CPU; memory and swap; OOM kills (7 days); hardware; temperatures;
 filesystems and inodes; block devices; fstab; network mounts and automount
 units; RAID; LVM; ZFS; SMART per disk; busiest processes (2-second sample);
 largest processes by memory; zombie processes; interfaces and default route;
-listening sockets with their owning process; socket summary; firewall (ufw,
-nftables or iptables) and fail2ban; failed units; units with errors in the
+listening sockets with their owning process; socket summary; firewall (ufw
+summarised: every rule open to Anywhere, other allow rules by port with their
+sources, block rules counted; otherwise nftables or iptables) and each
+fail2ban jail's bans, with a line for each tool that is not installed; failed units; units with errors in the
 last 24 hours and their state now; error-level journal entries (24 hours);
 SSH and sudo authentication (24 hours); recent logins; pending updates;
 chkrootkit's daily log against its baseline and, when it changed, the files
 behind each changed warning from `log.today.raw` (with owner, mode and mtime;
 lines `/etc/chkrootkit/chkrootkit.ignore` hides are only counted); crontabs
-and systemd timers; docker containers; then any `EXTRA_COMMANDS`.
+and systemd timers; docker containers; then any `EXTRA_COMMANDS` and the
+host's own commands.
 
 ▲ This data goes to the model's provider. It includes host names, IP
 addresses, user names and log lines. Process command lines are not sent,
